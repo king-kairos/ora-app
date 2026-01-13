@@ -1,0 +1,27 @@
+{
+  "name": "ora-app",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Origen Real de la Alianza Proyecto base de aplicación modular.",
+  "main": "index.js",
+  "scripts": {
+  "dev": "node --loader ts-node/esm src/app.ts"
+},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/king-kairos/ora-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/king-kairos/ora-app/issues"
+  },
+  "homepage": "https://github.com/king-kairos/ora-app#readme",
+  "devDependencies": {
+    "@types/node": "^25.0.8",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
