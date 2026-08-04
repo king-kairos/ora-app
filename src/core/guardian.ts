@@ -1,15 +1,10 @@
-export type ModuleName = 'rafael' | 'kaerliana' | 'orion';
+export type ModuleName = "rafael" | "kaerliana" | "orion";
 
-export class Guardian {
-  private authorizedByKairos = true;
-
-  authorize(module: ModuleName, action: string): boolean {
-    if (!this.authorizedByKairos) {
-      console.log(`❌ Acción bloqueada: ${module} → ${action}`);
-      return false;
-    }
-
-    console.log(`✅ Acción autorizada por Kairos: ${module} → ${action}`);
+class Guardian {
+  // Por ahora todo permitido (modo principiante / desbloqueo)
+  authorize(module: string, action: string): boolean {
+    // Si luego quieres volver a bloquear, aquí se pone la lógica.
+    // Por ahora: siempre true para que compile limpio.
     return true;
   }
 }

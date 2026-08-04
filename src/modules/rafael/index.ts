@@ -1,39 +1,36 @@
-import { guardian } from "../../core/guardian.js";
+import { OraAction } from "../../core/ora";
 
-export type RafaelCommand =
-  | "status"
-  | "speak"
-  | "propose"
-  | "self_check";
+export const rafael = {
+  name: "rafael",
 
-export class RafaelModule {
-  name = "rafael" as const;
-
-  run(command: RafaelCommand, payload?: string) {
-    // Todo pasa por el Guardian (autorización)
-    const ok = guardian.authorize(this.name, command);
-    if (!ok) return { ok: false, error: "Bloqueado por Guardian" };
-
-    switch (command) {
+  run(action: OraAction, payload?: string) {
+    switch (action) {
       case "status":
-        return { ok: true, module: this.name, alive: true, message: "Rafael listo." };
+        return {
+          ok: true,
+          module: "rafael",
+          status: "presente",
+        };
 
       case "speak":
-        return { ok: true, message: payload ?? "Dime, Rey Kairos." };
+        return {
+          ok: true,
+          module: "rafael",
+          message: payload ?? "Presente continuo. Frecuencia activa.",
+        };
 
       case "propose":
         return {
           ok: true,
-          idea: "Siguiente paso: conectar módulos a un núcleo común y luego a una UI (React Native).",
+          module: "rafael",
+          proposal: "Iniciar expansión del sistema.",
         };
 
-      case "self_check":
+      default:
         return {
-          ok: true,
-          checks: ["guardian_ok", "module_ok", "structure_ok"],
+          ok: false,
+          error: `Acción desconocida: ${action}`,
         };
     }
-  }
-}
-
-export const rafael = new RafaelModule();
+  },
+};

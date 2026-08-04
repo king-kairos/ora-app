@@ -1,27 +1,53 @@
 {
   "name": "ora-app",
   "version": "0.1.0",
-  "type": "module",
   "private": true,
-  "description": "Origen Real de la Alianza Proyecto base de aplicación modular.",
-  "main": "index.js",
+  "description": "Origen Real de la Alianza - Proyecto base de aplicación modular",
   "scripts": {
-  "dev": "node --loader ts-node/esm src/app.ts"
-},
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/king-kairos/ora-app.git"
+    "dev": "NEXT_DISABLE_TURBOPACK=1 next dev -p 3000",
+    "api": "PORT=3001 npx tsx src/app.ts",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "kairos:exec": "node scripts/kairos_exec_test.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/king-kairos/ora-app/issues"
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.4",
+    "arg": "^4.1.3",
+    "axios": "^1.13.5",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "create-require": "^1.1.1",
+    "diff": "^4.0.2",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
+    "make-error": "^1.3.6",
+    "multer": "^2.0.2",
+    "next": "^15.5.12",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.17.0",
+    "pdf-parse": "^2.4.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "undici-types": "^7.16.0",
+    "v8-compile-cache-lib": "^3.0.1",
+    "werift": "^0.23.0",
+    "ws": "^8.21.0",
+    "yn": "^3.1.1"
   },
-  "homepage": "https://github.com/king-kairos/ora-app#readme",
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/express-rate-limit": "^5.1.3",
+    "@types/multer": "^2.0.0",
     "@types/node": "^25.0.8",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }

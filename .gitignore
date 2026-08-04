@@ -2,3 +2,90 @@ node_modules/
 dist/
 .env
 .DS_Store
+
+# ===== NEXT / TYPESCRIPT =====
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+# ===== VARIABLES Y SECRETOS =====
+.env.*
+!.env.example
+android.keystore
+*.keystore
+local.properties
+# ===== DEPENDENCIAS Y CACHÉS =====
+.gradle/
+.cache/
+coverage/
+tmp/
+temp/
+# ===== BUILD ANDROID / JAVA =====
+build/
+app/build/
+*.apk
+*.aab
+*.idsig
+# ===== RESPALDOS Y ARCHIVOS GENERADOS POR ORA =====
+backups/
+ora-backups/
+app_backup/
+respaldo-health/
+.ora_history/
+ora_outputs/
+# ===== ARCHIVOS TEMPORALES =====
+*.log
+*.tmp
+*.swp
+*.save
+*.save.*
+*.bak
+*.backup
+*.backup-*
+*~
+# ===== SISTEMA =====
+Thumbs.db
+# ===== PRUEBAS Y RESIDUOS TEMPORALES =====
+src/PROOF_ORA.txt
+src/STATUS.md
+src/ZZ_DELETE_TEST.txt
+src/should_not_write.txt
+src/test-openai.ts
+test.js
+server_dump.txt
+scan.json
+payload.json
+pending.json
+data_proposals.json
+manifest-checksum.txt
+main
+o
+# ===== BACKUPS HISTÓRICOS ADICIONALES =====
+src/*.bak_*
+src/*.bak
+src/*.save*
+src/*.backup*
+src/app.tc.save
+# ===== RAMAS Y LABORATORIOS TEMPORALES =====
+src/pipeline-test/
+src/laboratorio-ciclo-1706c/
+src/prueba-del-autonomous-cycle-controller/
+src/crear-una-rama-de-laboratorio-llamada-laboratori/
+# ===== DATOS OPERATIVOS MUTABLES =====
+ora-data/
+ora-branches/
+data/
+# ===== ARCHIVOS VISUALES O BINARIOS SUELTOS =====
+ora-health.png
+store_icon.png
+
+# ===== RESPALDOS CON SUFIJOS Y ARCHIVOS DAÑADOS =====
+**/*.bak_*
+**/*.bak-*
+**/*.backup_*
+**/*.backup-*
+**/*.corrupta_*
+**/*.damaged_*
+**/*.old
+**/*.orig
+**/*.rej
