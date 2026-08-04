@@ -1,0 +1,1 @@
+export const COHERENCE_MARKER = "OK_TRACE";

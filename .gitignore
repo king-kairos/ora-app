@@ -89,3 +89,5 @@ store_icon.png
 **/*.old
 **/*.orig
 **/*.rej
+ops/audit_log.jsonl
+ops/ops.log.json

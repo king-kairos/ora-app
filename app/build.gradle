@@ -1,0 +1,160 @@
+/*
+ * Copyright 2019 Google Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+import groovy.xml.MarkupBuilder
+import groovy.util.IndentPrinter
+
+plugins {
+    id 'com.android.application'
+}
+
+def twaManifest = [
+    applicationId: 'com.orareal.healthsmg',
+    hostName: 'health.orareal.com',
+    launchUrl: '/health',
+    name: 'ORA Health',
+    launcherName: 'ORA Health',
+    themeColor: '#050505',
+    themeColorDark: '#000000',
+    navigationColor: '#000000',
+    navigationColorDark: '#000000',
+    navigationDividerColor: '#000000',
+    navigationDividerColorDark: '#000000',
+    backgroundColor: '#050505',
+    enableNotifications: true,
+    shortcuts: [],
+    splashScreenFadeOutDuration: 300,
+    generatorApp: 'bubblewrap-cli',
+    fallbackType: 'customtabs',
+    enableSiteSettingsShortcut: 'true',
+    orientation: 'portrait',
+]
+
+android {
+    compileSdkVersion 36
+    namespace "com.orareal.healthsmg"
+
+    signingConfigs {
+        release {
+            storeFile file("../android.keystore")
+            storePassword "jitendra67"
+            keyAlias "ora_health_key"
+            keyPassword "jitendra67"
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.orareal.healthsmg"
+        minSdkVersion 21
+        targetSdkVersion 35
+        versionCode 5
+        versionName "3.0"
+
+        resValue "string", "appName", twaManifest.name
+        resValue "string", "launcherName", twaManifest.launcherName
+
+        def fullLaunchUrl = "https://${twaManifest.hostName}${twaManifest.launchUrl}"
+        resValue "string", "launchUrl", fullLaunchUrl
+        resValue "string", "webManifestUrl", "https://health.orareal.com/manifest.webmanifest"
+        resValue "string", "fullScopeUrl", "https://health.orareal.com/"
+        resValue "string", "hostName", twaManifest.hostName
+
+        resValue "color", "colorPrimary", twaManifest.themeColor
+        resValue "color", "colorPrimaryDark", twaManifest.themeColorDark
+        resValue "color", "navigationColor", twaManifest.navigationColor
+        resValue "color", "navigationColorDark", twaManifest.navigationColorDark
+        resValue "color", "navigationDividerColor", twaManifest.navigationDividerColor
+        resValue "color", "navigationDividerColorDark", twaManifest.navigationDividerColorDark
+        resValue "color", "backgroundColor", twaManifest.backgroundColor
+
+        resValue "string", "providerAuthority", twaManifest.applicationId + ".fileprovider"
+        resValue "bool", "enableNotification", twaManifest.enableNotifications.toString()
+
+        twaManifest.shortcuts.eachWithIndex { shortcut, index ->
+            resValue "string", "shortcut_name_$index", "${shortcut.name}"
+            resValue "string", "shortcut_short_name_$index", "${shortcut.short_name}"
+        }
+
+        resValue "integer", "splashScreenFadeOutDuration", twaManifest.splashScreenFadeOutDuration.toString()
+        resValue "string", "generatorApp", twaManifest.generatorApp
+        resValue "string", "fallbackType", twaManifest.fallbackType
+        resValue "bool", "enableSiteSettingsShortcut", twaManifest.enableSiteSettingsShortcut
+        resValue "string", "orientation", twaManifest.orientation
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lintOptions {
+        checkReleaseBuilds false
+    }
+}
+
+task generateShorcutsFile {
+    assert twaManifest.shortcuts.size() < 5, "You can have at most 4 shortcuts."
+
+    twaManifest.shortcuts.eachWithIndex { s, i ->
+        assert s.name != null, "Missing `name` in shortcut #${i}"
+        assert s.short_name != null, "Missing `short_name` in shortcut #${i}"
+        assert s.url != null, "Missing `url` in shortcut #${i}"
+        assert s.icon != null, "Missing `icon` in shortcut #${i}"
+    }
+
+    def shortcutsDir = new File("$projectDir/src/main/res/xml")
+    shortcutsDir.mkdirs()
+    def shortcutsFile = new File(shortcutsDir, "shortcuts.xml")
+
+    def xmlWriter = new StringWriter()
+    def xmlMarkup = new MarkupBuilder(new IndentPrinter(xmlWriter, "    ", true))
+
+    xmlMarkup.'shortcuts'('xmlns:android': 'http://schemas.android.com/apk/res/android') {
+        twaManifest.shortcuts.eachWithIndex { s, i ->
+            'shortcut'(
+                'android:shortcutId': 'shortcut' + i,
+                'android:enabled': 'true',
+                'android:icon': '@drawable/' + s.icon,
+                'android:shortcutShortLabel': '@string/shortcut_short_name_' + i,
+                'android:shortcutLongLabel': '@string/shortcut_name_' + i
+            ) {
+                'intent'(
+                    'android:action': 'android.intent.action.MAIN',
+                    'android:targetPackage': twaManifest.applicationId,
+                    'android:targetClass': twaManifest.applicationId + '.LauncherActivity',
+                    'android:data': s.url
+                )
+                'categories'('android:name': 'android.intent.category.LAUNCHER')
+            }
+        }
+    }
+
+    shortcutsFile.text = xmlWriter.toString() + '\n'
+}
+
+preBuild.dependsOn(generateShorcutsFile)
+
+repositories {
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2'
+}

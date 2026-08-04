@@ -1,0 +1,1 @@
+export default function Page(){ return <div style={{padding:40,color:"lime"}}>MULTI SEARCH INTENT ENGINE REAL</div> }

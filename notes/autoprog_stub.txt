@@ -1,0 +1,3 @@
+GOAL: Quiero agregar un endpoint /api/ping
+
+[stub] Autoprog funcionando.

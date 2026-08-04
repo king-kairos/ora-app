@@ -1,0 +1,1 @@
+export const EVO_TEST = "ORA_EVOLUTION_OK";

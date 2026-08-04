@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.orareal.healthsmg",
+      "sha256_cert_fingerprints": [
+        "DA:B4:59:AB:53:2B:D9:86:5C:17:A2:5D:05:3B:0B:3F:1D:C5:1C:F3:A4:01:95:92:47:8F:63:87:71:1E:B6:9E"
+      ]
+    }
+  }
+]

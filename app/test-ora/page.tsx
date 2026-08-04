@@ -1,0 +1,1 @@
+export default function Page(){ return <div style={{padding:40,color:`lime`}}>ORA CREATE ENGINE VIVO</div> }

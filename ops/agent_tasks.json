@@ -1,0 +1,17 @@
+[
+  {
+    "id": "t-1",
+    "title": "ping",
+    "description": "test"
+  },
+  {
+    "id": "T-1769738508616",
+    "module": "rafael",
+    "action": "speak",
+    "payload": {
+      "text": "ORA despierta."
+    },
+    "createdAt": "2026-01-30T02:01:48.616Z",
+    "status": "queued"
+  }
+]

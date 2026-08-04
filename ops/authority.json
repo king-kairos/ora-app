@@ -1,0 +1,9 @@
+{
+  "root": {
+    "id": "kairos",
+    "name": "Rey Kairos",
+    "role": "root",
+    "immutable": true
+  },
+  "delegates": []
+}

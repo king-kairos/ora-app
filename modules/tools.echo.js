@@ -1,0 +1,1 @@
+module.exports = async function(payload, ctx){ return { ok:true, echo: payload, actorId: ctx.actorId, at: new Date().toISOString() }; };
