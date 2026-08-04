@@ -3,25 +3,25 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { applyPatch } from "../../../../src/ai/autoprog/applyPatch";
 import { getProposal, setStatus } from "../../../../src/ai/autoprog/patchStore";
-
-function normalizeSeal(value: string | null) {
-  return String(value || "").trim();
-}
-
-function hasValidSeal(req: Request) {
-  const expected = String(process.env.KAIROS_SEAL || "").trim();
-  if (!expected) return true;
-
-  const received = normalizeSeal(req.headers.get("x-kairos-seal"));
-  return received === expected;
-}
+import { authorizeKairosExecution } from "../../../../src/security/kairosExecutionGate";
 
 export async function POST(req: Request) {
   try {
-    if (!hasValidSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "apply_patch"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
-        { ok: false, error: "SELLO_INVALIDO" },
-        { status: 403 }
+        {
+          ok: false,
+          action: authorization.action,
+          error: authorization.error,
+        },
+        {
+          status: authorization.status,
+        }
       );
     }
 
