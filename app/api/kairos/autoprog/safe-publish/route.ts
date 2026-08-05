@@ -3,20 +3,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { runAutoHealAnalysis } from "../../../../../src/ai/autoprog/autoHealEngine";
-
-function hasValidSeal(req: Request) {
-  const expected = String(
-    process.env.KAIROS_SEAL || ""
-  ).trim();
-
-  if (!expected) return true;
-
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-
-  return received === expected;
-}
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 function sleep(ms: number) {
   return new Promise((resolve) => {
@@ -33,14 +20,20 @@ async function readJson(response: Response) {
 
 export async function POST(req: Request) {
   try {
-    if (!hasValidSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "publish"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "SELLO_INVALIDO",
+          action: authorization.action,
+          error: authorization.error,
         },
         {
-          status: 403,
+          status: authorization.status,
         }
       );
     }
