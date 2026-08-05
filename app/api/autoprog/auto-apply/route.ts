@@ -1,22 +1,36 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-import { NextResponse } from "next/server";
-import { runAutoApplySafe } from "../../../../src/ai/autoprog/auto-apply-engine";
+import {
+  NextResponse,
+} from "next/server";
+
+function retiredResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      retired: true,
+      mode:
+        "AUTO_APPLY_LEGACY_RETIRED",
+      error:
+        "AUTONOMOUS_MUTATION_DISABLED",
+      message:
+        "Auto-apply fue retirado porque una mutación real requiere autorización explícita mediante la Puerta Kairos.",
+      replacement:
+        "/api/kairos/autoprog/apply",
+      kairosGateRequiredOnReplacement:
+        true,
+    },
+    {
+      status: 410,
+    }
+  );
+}
 
 export async function GET() {
-  try {
-    const result = await runAutoApplySafe();
-    return NextResponse.json(result);
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Fallo interno en auto-apply seguro",
-      },
-      { status: 500 }
-    );
-  }
+  return retiredResponse();
+}
+
+export async function POST() {
+  return retiredResponse();
 }

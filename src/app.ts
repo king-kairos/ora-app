@@ -13,6 +13,7 @@ import aiRunRoute from "./server/routes/ai-run";
 import { exec } from "child_process";
 
 import * as PatchEngine from "./ai/autoprog/applyPatch";
+import { authorizeKairosExecution } from "./security/kairosExecutionGate";
 import {
   createProposal as createProposalStore,
   listProposals as listProposalsStore,
@@ -6019,6 +6020,36 @@ app.post(
   strictLimiter,
   async (req, res) => {
     try {
+      /*
+       * La validación explícita evita que BYPASS_LOCAL
+       * autorice una mutación real del filesystem.
+       */
+      const authorization =
+        authorizeKairosExecution(
+          new Request(
+            "http://127.0.0.1/api/ora/autoprog/patch/apply",
+            {
+              method: "POST",
+              headers: {
+                "x-kairos-seal": String(
+                  req.header("x-kairos-seal") || ""
+                ),
+              },
+            }
+          ),
+          "apply_patch"
+        );
+
+      if (!authorization.ok) {
+        return res
+          .status(authorization.status)
+          .json({
+            ok: false,
+            action: authorization.action,
+            error: authorization.error,
+          });
+      }
+
       const id = String(req.body?.id || "").trim();
 
       if (!id) {
