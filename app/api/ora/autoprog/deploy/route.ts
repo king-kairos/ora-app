@@ -2,9 +2,7 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { exec } from "child_process";
-import crypto from "crypto";
-
-const KAIROS_SEAL = String(process.env.KAIROS_SEAL || "").trim();
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 function run(cmd: string): Promise<{ ok: boolean; cmd: string; output: string }> {
   return new Promise((resolve) => {
@@ -26,16 +24,6 @@ function run(cmd: string): Promise<{ ok: boolean; cmd: string; output: string }>
   });
 }
 
-function verifySeal(req: NextRequest) {
-  const seal = req.headers.get("x-kairos-seal") || "";
-  if (!KAIROS_SEAL) return false;
-
-  const a = crypto.createHash("sha256").update(seal).digest("hex");
-  const b = crypto.createHash("sha256").update(KAIROS_SEAL).digest("hex");
-
-  return a === b;
-}
-
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -47,14 +35,23 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    if (!verifySeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "deploy"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "INVALID_KAIROS_SEAL",
-          message: "Nada se ejecuta sin el Sello de Kairos.",
+          action: authorization.action,
+          error: authorization.error,
+          message:
+            "Nada se ejecuta sin autorización válida del Sello de Kairos.",
         },
-        { status: 403 }
+        {
+          status: authorization.status,
+        }
       );
     }
 
