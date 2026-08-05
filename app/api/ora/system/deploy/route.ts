@@ -4,17 +4,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 const run = promisify(exec);
-function hasValidSeal(req: Request) {
-  const expected = String(process.env.KAIROS_SEAL || "").trim();
-  if (!expected) {
-    return true;
-  }
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-  return received === expected;
-}
 async function runCommand(command: string) {
   const { stdout, stderr } = await run(command, {
     cwd: process.cwd(),
@@ -117,14 +108,20 @@ async function runSmokeTestAfterDeploy(proposalId: string | null) {
 
 export async function POST(req: Request) {
   try {
-    if (!hasValidSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "deploy"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "SELLO_INVALIDO",
+          action: authorization.action,
+          error: authorization.error,
         },
         {
-          status: 403,
+          status: authorization.status,
         }
       );
     }
