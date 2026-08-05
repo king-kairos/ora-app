@@ -6,6 +6,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 const run = promisify(exec);
 
@@ -23,22 +24,6 @@ const HISTORY_FILE = path.join(
   HISTORY_DIR,
   "history.jsonl"
 );
-
-/* =========================
-   SEAL
-========================= */
-
-function hasValidSeal(req: Request) {
-  const expected = String(process.env.KAIROS_SEAL || "").trim();
-
-  if (!expected) return true;
-
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-
-  return received === expected;
-}
 
 /* =========================
    ACTIONS
@@ -60,6 +45,35 @@ const ACTIONS: Record<string, string> = {
   deploy_full:
     "npm run build && pm2 restart ora-front && pm2 restart ora",
 };
+
+const READ_ONLY_ACTIONS = new Set([
+  "pm2_status",
+  "logs_front",
+  "logs_core",
+]);
+
+function executionGateAction(action: string) {
+  switch (action) {
+    case "build":
+      return "modify_runtime" as const;
+
+    case "restart_front":
+      return "restart_front" as const;
+
+    case "restart_core":
+      return "restart_core" as const;
+
+    case "deploy_full":
+      return "deploy" as const;
+
+    default:
+      return null;
+  }
+}
+
+function isReadOnlyAction(action: string) {
+  return READ_ONLY_ACTIONS.has(action);
+}
 
 /* =========================
    INTENT → ACTION
@@ -188,24 +202,6 @@ async function runCommand(command: string) {
 
 export async function POST(req: Request) {
   try {
-    if (!hasValidSeal(req)) {
-      appendHistory({
-        ts: Date.now(),
-        ok: false,
-        type: "INVALID_SEAL",
-      });
-
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "SELLO_INVALIDO",
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
     const body = await req.json().catch(() => ({}));
 
     const rawAction = String(body?.action || "").trim();
@@ -237,6 +233,46 @@ export async function POST(req: Request) {
           status: 400,
         }
       );
+    }
+
+    const readOnly = isReadOnlyAction(action);
+    const gateAction = executionGateAction(action);
+
+    if (!readOnly) {
+      if (!gateAction) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "EXECUTION_ACTION_NOT_MAPPED",
+            action,
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+
+      const authorization = authorizeKairosExecution(
+        req,
+        gateAction
+      );
+
+      if (!authorization.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            action,
+            executionAction:
+              authorization.action,
+            error:
+              authorization.error,
+          },
+          {
+            status:
+              authorization.status,
+          }
+        );
+      }
     }
 
     const result = await runCommand(command);
