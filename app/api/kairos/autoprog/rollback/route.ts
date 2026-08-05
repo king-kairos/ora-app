@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import { exec as execCallback } from "child_process";
 import { promisify } from "util";
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 const execAsync = promisify(execCallback);
 
@@ -61,20 +62,6 @@ type RestoreItem = {
 
 function ensureDir(dir: string) {
   fs.mkdirSync(dir, { recursive: true });
-}
-
-function hasValidSeal(req: Request) {
-  const expected = String(
-    process.env.KAIROS_SEAL || ""
-  ).trim();
-
-  if (!expected) return true;
-
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-
-  return received === expected;
 }
 
 function isInside(parent: string, child: string) {
@@ -277,19 +264,7 @@ async function runBuild() {
   }
 }
 
-export async function GET(req: Request) {
-  if (!hasValidSeal(req)) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "SELLO_INVALIDO",
-      },
-      {
-        status: 403,
-      }
-    );
-  }
-
+export async function GET(_req: Request) {
   ensureDir(ROLLBACK_HISTORY_DIR);
 
   const history = fs.existsSync(ROLLBACK_HISTORY_FILE)
@@ -330,18 +305,6 @@ export async function POST(req: Request) {
   const rollbackId = `rollback-${startedAt}`;
 
   try {
-    if (!hasValidSeal(req)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "SELLO_INVALIDO",
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
     const body = await req
       .json()
       .catch(() => ({}));
@@ -520,6 +483,44 @@ export async function POST(req: Request) {
         message:
           "Vista previa selectiva completada. No se modificó ningún archivo.",
       });
+    }
+
+    /*
+     * FRONTERA SOBERANA DE ROLLBACK
+     *
+     * Todo lo anterior puede calcularse como dry run.
+     * A partir de aquí comienzan las escrituras reales,
+     * restauración, build y deploy.
+     */
+    const authorization =
+      authorizeKairosExecution(
+        req,
+        "rollback"
+      );
+
+    if (!authorization.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "ROLLBACK_EXECUTION_BLOCKED",
+          rollbackId,
+          action: authorization.action,
+          error: authorization.error,
+          dryRunAvailable: true,
+          executeRequired: true,
+          filesCount: items.length,
+          backupRoot: path.relative(
+            ROOT,
+            backupRoot
+          ),
+          message:
+            "El plan de rollback fue preparado, pero la restauración real requiere el Sello Kairos.",
+        },
+        {
+          status: authorization.status,
+        }
+      );
     }
 
     const safetyRoot = path.join(
