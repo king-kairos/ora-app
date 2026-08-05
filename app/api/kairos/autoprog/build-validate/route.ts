@@ -2,13 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
-
-function hasValidSeal(req: Request) {
-  const expected = String(process.env.KAIROS_SEAL || "").trim();
-  if (!expected) return true;
-  const received = String(req.headers.get("x-kairos-seal") || "").trim();
-  return received === expected;
-}
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 function run(cmd: string) {
   return new Promise<{ ok: boolean; stdout: string; stderr: string }>((resolve) => {
@@ -24,10 +18,21 @@ function run(cmd: string) {
 
 export async function POST(req: Request) {
   try {
-    if (!hasValidSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "modify_runtime"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
-        { ok: false, error: "SELLO_INVALIDO" },
-        { status: 403 }
+        {
+          ok: false,
+          action: authorization.action,
+          error: authorization.error,
+        },
+        {
+          status: authorization.status,
+        }
       );
     }
 

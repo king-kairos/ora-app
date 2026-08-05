@@ -10,21 +10,11 @@ import {
   updateOperation,
 } from "@/kairos/orchestrator/engine";
 
+import {
+  authorizeKairosExecution,
+} from "@/security/kairosExecutionGate";
+
 const run = promisify(exec);
-
-function validSeal(req: Request) {
-  const expected = String(
-    process.env.KAIROS_SEAL || ""
-  ).trim();
-
-  if (!expected) return true;
-
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-
-  return received === expected;
-}
 
 function scheduleRestart() {
   const child = spawn(
@@ -47,14 +37,20 @@ export async function POST(req: Request) {
   let operationId = "";
 
   try {
-    if (!validSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "restart_front"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "SELLO_INVALIDO",
+          action: authorization.action,
+          error: authorization.error,
         },
         {
-          status: 403,
+          status: authorization.status,
         }
       );
     }
