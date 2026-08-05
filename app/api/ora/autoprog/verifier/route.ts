@@ -1,9 +1,19 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
 
-function run(cmd: string): Promise<{ ok: boolean; output: string }> {
+import {
+  authorizeKairosExecution,
+} from "../../../../../src/security/kairosExecutionGate";
+
+function run(
+  cmd: string
+): Promise<{
+  ok: boolean;
+  output: string;
+}> {
   return new Promise((resolve) => {
     exec(
       cmd,
@@ -15,7 +25,8 @@ function run(cmd: string): Promise<{ ok: boolean; output: string }> {
       (error, stdout, stderr) => {
         resolve({
           ok: !error,
-          output: `${stdout || ""}\n${stderr || ""}`.trim(),
+          output:
+            `${stdout || ""}\n${stderr || ""}`.trim(),
         });
       }
     );
@@ -26,19 +37,44 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     route: "/api/ora/autoprog/verifier",
-    message: "Verifier activo. Usa POST para correr verificación.",
+    method: "POST",
+    authority: "KAIROS_EXECUTION_GATE",
+    action: "modify_runtime",
+    message:
+      "Verifier activo. El build requiere Sello de Kairos.",
   });
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  const authorization =
+    authorizeKairosExecution(
+      req,
+      "modify_runtime"
+    );
+
+  if (!authorization.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        action: authorization.action,
+        error: authorization.error,
+      },
+      {
+        status: authorization.status,
+      }
+    );
+  }
+
   const build = await run("npm run build");
 
   return NextResponse.json({
     ok: build.ok,
-    status: build.ok ? "PASSED" : "FAILED",
+    status: build.ok
+      ? "PASSED"
+      : "FAILED",
     message: build.ok
       ? "Verificación correcta. El sistema compila."
-      : "Verificación falló. Hay errores que deben corregirse antes de aplicar más.",
-    output: build.output,
+      : "Verificación falló. No se deben aplicar ni publicar más cambios.",
+    output: build.output.slice(-10000),
   });
 }
