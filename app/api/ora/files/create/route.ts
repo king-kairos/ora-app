@@ -1,67 +1,166 @@
-import { NextRequest, NextResponse } from "next/server";
+export const runtime = "nodejs";
+
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 import fs from "fs";
 import path from "path";
 
-const ROOT = process.cwd();
+import {
+  authorizeKairosExecution,
+} from "../../../../../src/security/kairosExecutionGate";
 
-function safeResolve(inputPath: string) {
-  const resolved = path.resolve(ROOT, inputPath);
+import {
+  resolveKairosFileTarget,
+} from "../../../../../src/security/kairosFileTarget";
 
-  if (!resolved.startsWith(ROOT)) {
-    throw new Error("INVALID_PATH");
-  }
-
-  return resolved;
-}
-
-export async function POST(req: NextRequest) {
+export async function POST(
+  req: NextRequest
+) {
   try {
-    const body = await req.json();
+    const authorization =
+      authorizeKairosExecution(
+        req,
+        "create_file"
+      );
 
-    const file = String(body?.file || "").trim();
-    const content = String(body?.content || "");
-    const overwrite = Boolean(body?.overwrite);
-
-    if (!file) {
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "MISSING_FILE",
+          action:
+            authorization.action,
+          error:
+            authorization.error,
         },
-        { status: 400 }
+        {
+          status:
+            authorization.status,
+        }
       );
     }
 
-    const resolved = safeResolve(file);
+    const body = await req
+      .json()
+      .catch(() => ({}));
 
-    if (fs.existsSync(resolved) && !overwrite) {
+    const file = String(
+      body?.file || ""
+    ).trim();
+
+    const content = String(
+      body?.content ?? ""
+    );
+
+    const overwrite =
+      body?.overwrite === true;
+
+    const target =
+      resolveKairosFileTarget(file);
+
+    const existed =
+      fs.existsSync(target.absolute);
+
+    if (existed && !overwrite) {
       return NextResponse.json(
         {
           ok: false,
-          error: "FILE_ALREADY_EXISTS",
+          error:
+            "FILE_ALREADY_EXISTS",
+          file: target.relative,
         },
-        { status: 400 }
+        {
+          status: 409,
+        }
       );
     }
 
-    fs.mkdirSync(path.dirname(resolved), {
-      recursive: true,
-    });
+    fs.mkdirSync(
+      path.dirname(target.absolute),
+      {
+        recursive: true,
+      }
+    );
 
-    fs.writeFileSync(resolved, content, "utf8");
+    let backup: string | null = null;
+
+    if (existed) {
+      const backupDir = path.resolve(
+        target.root,
+        "ora-data/backups/files-create"
+      );
+
+      fs.mkdirSync(backupDir, {
+        recursive: true,
+      });
+
+      backup = path.join(
+        backupDir,
+        target.relative.replace(
+          /[\/\\]/g,
+          "__"
+        ) +
+          "." +
+          Date.now() +
+          ".bak"
+      );
+
+      fs.copyFileSync(
+        target.absolute,
+        backup
+      );
+    }
+
+    fs.writeFileSync(
+      target.absolute,
+      content,
+      "utf8"
+    );
 
     return NextResponse.json({
       ok: true,
-      created: true,
-      file,
+      action: "create_file",
+      authorizedBy:
+        authorization.authorizedBy,
+      created: !existed,
+      overwritten: existed,
+      file: target.relative,
+      bytes: Buffer.byteLength(
+        content,
+        "utf8"
+      ),
+      backup: backup
+        ? path.relative(
+            target.root,
+            backup
+          )
+        : null,
+      message: existed
+        ? "Archivo reemplazado bajo autorización Kairos."
+        : "Archivo creado bajo autorización Kairos.",
     });
-  } catch (e: any) {
+  } catch (error: any) {
+    const message =
+      error?.message ||
+      "CREATE_FAILED";
+
+    const status =
+      message.includes("PATH") ||
+      message.includes("BLOCKED") ||
+      message.includes("SYMLINK") ||
+      message.includes("FILE_PATH")
+        ? 400
+        : 500;
+
     return NextResponse.json(
       {
         ok: false,
-        error: e?.message || "CREATE_FAILED",
+        error: message,
       },
-      { status: 500 }
+      {
+        status,
+      }
     );
   }
 }

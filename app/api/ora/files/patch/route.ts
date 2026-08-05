@@ -1,55 +1,211 @@
-import { NextRequest, NextResponse } from "next/server";
+export const runtime = "nodejs";
+
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 
-export async function POST(req: NextRequest) {
+import {
+  authorizeKairosExecution,
+} from "../../../../../src/security/kairosExecutionGate";
+
+import {
+  resolveKairosFileTarget,
+} from "../../../../../src/security/kairosFileTarget";
+
+export async function POST(
+  req: NextRequest
+) {
   try {
-    const body = await req.json();
+    const authorization =
+      authorizeKairosExecution(
+        req,
+        "apply_patch"
+      );
 
-    const file = String(body.file || "").trim();
-    const find = String(body.find || "");
-    const replace = String(body.replace || "");
-
-    if (!file) {
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "FILE_REQUIRED",
+          action:
+            authorization.action,
+          error:
+            authorization.error,
         },
-        { status: 400 }
+        {
+          status:
+            authorization.status,
+        }
       );
     }
 
-    const fullPath = path.join(process.cwd(), file);
+    const body = await req
+      .json()
+      .catch(() => ({}));
 
-    const original = await fs.readFile(fullPath, "utf8");
+    const file = String(
+      body?.file || ""
+    ).trim();
 
-    if (!original.includes(find)) {
+    const find = String(
+      body?.find ?? ""
+    );
+
+    const replace = String(
+      body?.replace ?? ""
+    );
+
+    if (!find) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FIND_TEXT_REQUIRED",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const target =
+      resolveKairosFileTarget(file);
+
+    if (
+      !fsSync.existsSync(
+        target.absolute
+      )
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FILE_NOT_FOUND",
+          file: target.relative,
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    const original =
+      await fs.readFile(
+        target.absolute,
+        "utf8"
+      );
+
+    const occurrences =
+      original.split(find).length - 1;
+
+    if (occurrences === 0) {
       return NextResponse.json(
         {
           ok: false,
           error: "TEXT_NOT_FOUND",
+          file: target.relative,
         },
-        { status: 404 }
+        {
+          status: 404,
+        }
       );
     }
 
-    const updated = original.replace(find, replace);
+    const replaceAll =
+      body?.replaceAll === true;
 
-    await fs.writeFile(fullPath, updated, "utf8");
+    if (
+      occurrences > 1 &&
+      !replaceAll
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "TEXT_MATCH_NOT_UNIQUE",
+          matches: occurrences,
+          message:
+            "Existen varias coincidencias. Use replaceAll únicamente después de revisar la propuesta.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    const updated = replaceAll
+      ? original.split(find).join(replace)
+      : original.replace(find, replace);
+
+    const backupDir = path.resolve(
+      target.root,
+      "ora-data/backups/files-patch"
+    );
+
+    fsSync.mkdirSync(backupDir, {
+      recursive: true,
+    });
+
+    const backup = path.join(
+      backupDir,
+      target.relative.replace(
+        /[\/\\]/g,
+        "__"
+      ) +
+        "." +
+        Date.now() +
+        ".bak"
+    );
+
+    await fs.copyFile(
+      target.absolute,
+      backup
+    );
+
+    await fs.writeFile(
+      target.absolute,
+      updated,
+      "utf8"
+    );
 
     return NextResponse.json({
       ok: true,
-      message: "Patch aplicado.",
-      file,
+      action: "apply_patch",
+      authorizedBy:
+        authorization.authorizedBy,
+      file: target.relative,
+      matchesReplaced: replaceAll
+        ? occurrences
+        : 1,
+      backup: path.relative(
+        target.root,
+        backup
+      ),
+      message:
+        "Patch aplicado bajo autorización Kairos.",
     });
-  } catch (e: any) {
+  } catch (error: any) {
+    const message =
+      error?.message ||
+      "PATCH_FAILED";
+
+    const status =
+      message.includes("PATH") ||
+      message.includes("BLOCKED") ||
+      message.includes("SYMLINK") ||
+      message.includes("FILE_PATH")
+        ? 400
+        : 500;
+
     return NextResponse.json(
       {
         ok: false,
-        error: e?.message || "PATCH_FAILED",
+        error: message,
       },
-      { status: 500 }
+      {
+        status,
+      }
     );
   }
 }
