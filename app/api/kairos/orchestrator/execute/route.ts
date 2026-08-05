@@ -16,6 +16,7 @@ import {
 } from "@/ai/autoprog/patchStore";
 
 import { applyPatch } from "@/ai/autoprog/applyPatch";
+import { authorizeKairosExecution } from "@/security/kairosExecutionGate";
 
 import {
   advanceStrategicPlanAfterAppliedProposal,
@@ -52,20 +53,6 @@ const BLOCKED_PREFIXES = [
 
 function normalizeSeal(value: string | null) {
   return String(value || "").trim();
-}
-
-function hasValidSeal(req: Request) {
-  const expected = String(
-    process.env.KAIROS_SEAL || ""
-  ).trim();
-
-  if (!expected) return true;
-
-  const received = normalizeSeal(
-    req.headers.get("x-kairos-seal")
-  );
-
-  return received === expected;
 }
 
 function normalizeRelativePath(input: unknown) {
@@ -175,14 +162,20 @@ export async function POST(req: Request) {
   let operationId = "";
 
   try {
-    if (!hasValidSeal(req)) {
+    const authorization = authorizeKairosExecution(
+      req,
+      "apply_patch"
+    );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "SELLO_INVALIDO",
+          action: authorization.action,
+          error: authorization.error,
         },
         {
-          status: 403,
+          status: authorization.status,
         }
       );
     }
