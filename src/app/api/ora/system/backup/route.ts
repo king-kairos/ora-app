@@ -1,89 +1,50 @@
-import { NextRequest, NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
-import { exec } from "child_process";
-import util from "util";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const execAsync = util.promisify(exec);
-const ROOT = process.cwd();
+import {
+  NextResponse,
+} from "next/server";
 
-function timestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-async function ensureDir(dir: string) {
-  await fs.mkdir(dir, { recursive: true });
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const expectedSeal = process.env.KAIROS_SEAL || "";
-
-    const seal =
-      req.headers.get("kairos-seal") ||
-      req.headers.get("x-kairos-seal") ||
-      "";
-
-    if (!seal || seal !== expectedSeal) {
-      return NextResponse.json({
-        ok: false,
-        error: "Missing seal",
-      });
-    }
-
-    const stamp = timestamp();
-
-    const SNAPSHOT_DIR = path.join(
-      ROOT,
-      "ora-backups",
-      "snapshots",
-      stamp
-    );
-
-    await ensureDir(SNAPSHOT_DIR);
-
-    const targets = [
-      "src",
-      "app",
-      "ora-data",
-      "package.json",
-      "package-lock.json",
-      "next.config.js",
-      "next.config.ts",
-      "tsconfig.json",
-      ".env",
-      ".env.local",
-    ];
-
-    const copied: string[] = [];
-
-    for (const target of targets) {
-      const full = path.join(ROOT, target);
-
-      try {
-        await fs.access(full);
-
-        const dest = path.join(SNAPSHOT_DIR, target);
-        await ensureDir(path.dirname(dest));
-
-        await execAsync(`cp -r "${full}" "${dest}"`);
-
-        copied.push(target);
-      } catch {
-        // ignorar si no existe
-      }
-    }
-
-    return NextResponse.json({
-      ok: true,
-      backup: stamp,
-      snapshotDir: SNAPSHOT_DIR,
-      copied,
-    });
-  } catch (err: any) {
-    return NextResponse.json({
+/**
+ * LEGACY_BACKUP_ROUTE_RETIRED
+ *
+ * Esta copia duplicada ejecutaba mkdir y cp directamente,
+ * tenía validación local de sello y podía incluir archivos
+ * sensibles como .env.
+ *
+ * La única ruta activa de backup es:
+ *
+ * app/api/ora/system/backup/route.ts
+ *
+ * Toda ejecución real exige ahora la acción "backup"
+ * mediante la Puerta Kairos central.
+ */
+function retiredResponse() {
+  return NextResponse.json(
+    {
       ok: false,
-      error: err?.message || String(err),
-    });
-  }
+      retired: true,
+      mode:
+        "LEGACY_BACKUP_ROUTE_RETIRED",
+      error:
+        "LEGACY_ROUTE_RETIRED",
+      replacement:
+        "/api/ora/system/backup",
+      requiredAction:
+        "backup",
+      kairosGateRequiredOnReplacement:
+        true,
+    },
+    {
+      status: 410,
+    }
+  );
+}
+
+export async function GET() {
+  return retiredResponse();
+}
+
+export async function POST() {
+  return retiredResponse();
 }

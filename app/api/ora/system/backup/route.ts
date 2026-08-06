@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
+import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 const ROOT = process.cwd();
 const SNAPSHOTS_ROOT = path.resolve(ROOT, "ora-backups", "snapshots");
@@ -32,15 +33,6 @@ async function ensureDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
 }
 
-function hasValidSeal(req: Request) {
-  const expected = String(process.env.KAIROS_SEAL || "").trim();
-  const received = String(
-    req.headers.get("x-kairos-seal") || ""
-  ).trim();
-
-  if (!expected) return true;
-  return received === expected;
-}
 
 function isInside(parent: string, child: string) {
   const relative = path.relative(parent, child);
@@ -172,14 +164,21 @@ export async function POST(req: NextRequest) {
   const startedAt = Date.now();
 
   try {
-    if (!hasValidSeal(req)) {
+    const authorization =
+      authorizeKairosExecution(
+        req,
+        "backup"
+      );
+
+    if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "SELLO_INVALIDO",
+          action: authorization.action,
+          error: authorization.error,
         },
         {
-          status: 403,
+          status: authorization.status,
         }
       );
     }

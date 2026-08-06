@@ -12,6 +12,7 @@ export const KAIROS_EXECUTION_ACTIONS = [
   "restart_core",
   "restart_process",
   "rollback",
+  "backup",
   "git_commit",
   "git_push",
   "modify_runtime",
