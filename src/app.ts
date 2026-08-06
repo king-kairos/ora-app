@@ -2547,8 +2547,39 @@ async function publishProposalById(id: string, req: any) {
     proposal.files?.map((f: any) => f.path).filter(Boolean) ||
     [];
 
-  if (!canBypassLocal(req)) {
-    throw new Error("PUBLISH_LOCAL_ONLY");
+  /*
+   * FRONTERA SOBERANA DE PUBLICACIÓN
+   *
+   * Publicar puede ejecutar build y reinicios.
+   * BYPASS_LOCAL no concede autoridad de ejecución.
+   */
+  const authorization =
+    authorizeKairosExecution(
+      new Request(
+        "http://127.0.0.1/api/ora/autoprog/publish",
+        {
+          method: "POST",
+          headers: {
+            "x-kairos-seal": String(
+              req.header("x-kairos-seal") || ""
+            ),
+          },
+        }
+      ),
+      "publish"
+    );
+
+  if (!authorization.ok) {
+    const error: any =
+      new Error(authorization.error);
+
+    error.status =
+      authorization.status;
+
+    error.action =
+      authorization.action;
+
+    throw error;
   }
 
   const plan = inferPublishPlanFromFiles(filePaths);
@@ -5005,9 +5036,21 @@ app.post(
       const result = await publishProposalById(id, req);
       return res.json(result);
     } catch (e: any) {
-      const msg = e?.message || "PUBLISH_FAIL";
-      const status = msg === "PUBLISH_LOCAL_ONLY" ? 403 : 400;
-      return res.status(status).json({ ok: false, error: msg });
+      const msg =
+        e?.message ||
+        "PUBLISH_FAIL";
+
+      const status =
+        Number(e?.status) || 400;
+
+      return res
+        .status(status)
+        .json({
+          ok: false,
+          action:
+            e?.action || "publish",
+          error: msg,
+        });
     }
   }
 );
@@ -5341,9 +5384,21 @@ app.post(
       const result = await publishProposalById(id, req);
       res.json(result);
     } catch (e: any) {
-      const msg = e?.message || "PUBLISH_FAIL";
-      const status = msg === "PUBLISH_LOCAL_ONLY" ? 403 : 400;
-      res.status(status).json({ ok: false, error: msg });
+      const msg =
+        e?.message ||
+        "PUBLISH_FAIL";
+
+      const status =
+        Number(e?.status) || 400;
+
+      res
+        .status(status)
+        .json({
+          ok: false,
+          action:
+            e?.action || "publish",
+          error: msg,
+        });
     }
   }
 );
@@ -6885,17 +6940,63 @@ app.get("/api/ora-health/orientaciones", requireKairosSeal, async (_req, res) =>
   }
 });
 
- app.post("/api/ora/system/deploy", requireKairosSeal, async (_req, res) => {
-   const cmd =
-     "cd /home/ora/ora-app && npm run build && pm2 restart ora-front --update-env && pm2 restart ora --update-env";
+app.post(
+  "/api/ora/system/deploy",
+  requireKairosSeal,
+  async (req, res) => {
+    /*
+     * FRONTERA SOBERANA DE DEPLOY EN CORE
+     *
+     * requireKairosSeal conserva compatibilidad,
+     * pero BYPASS_LOCAL no puede autorizar deploy.
+     */
+    const authorization =
+      authorizeKairosExecution(
+        new Request(
+          "http://127.0.0.1/api/ora/system/deploy",
+          {
+            method: "POST",
+            headers: {
+              "x-kairos-seal": String(
+                req.header("x-kairos-seal") || ""
+              ),
+            },
+          }
+        ),
+        "deploy"
+      );
 
-   exec(`${cmd} > /dev/null 2>&1 &`);
+    if (!authorization.ok) {
+      return res
+        .status(authorization.status)
+        .json({
+          ok: false,
+          action:
+            authorization.action,
+          error:
+            authorization.error,
+        });
+    }
 
-   return res.json({
-     ok: true,
-     message: "Deploy soberano iniciado en background.",
-   });	
- });
+    const cmd =
+      "cd /home/ora/ora-app && npm run build && pm2 restart ora-front --update-env && pm2 restart ora --update-env";
+
+    exec(
+      `${cmd} > /dev/null 2>&1 &`
+    );
+
+    return res.json({
+      ok: true,
+      authority:
+        "KAIROS_EXECUTION_GATE",
+      action:
+        "deploy",
+      message:
+        "Deploy soberano iniciado en background.",
+    });
+  }
+);
+
 
 // ================== START ==================
 let __oraServer: any = null;
