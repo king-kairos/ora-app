@@ -265,8 +265,6 @@ async function runBuild() {
 }
 
 export async function GET(_req: Request) {
-  ensureDir(ROLLBACK_HISTORY_DIR);
-
   const history = fs.existsSync(ROLLBACK_HISTORY_FILE)
     ? fs
         .readFileSync(
@@ -303,6 +301,7 @@ export async function GET(_req: Request) {
 export async function POST(req: Request) {
   const startedAt = Date.now();
   const rollbackId = `rollback-${startedAt}`;
+  let executionAuthorized = false;
 
   try {
     const body = await req
@@ -322,6 +321,44 @@ export async function POST(req: Request) {
     ).trim() || null;
 
     const execute = body?.execute === true;
+
+    /*
+     * FRONTERA SOBERANA TEMPRANA
+     *
+     * El análisis y dry run permanecen libres.
+     * Cuando execute=true, la Puerta Kairos debe
+     * autorizar antes de cualquier escritura,
+     * restauración, build, historial o deploy.
+     */
+    if (execute) {
+      const authorization =
+        authorizeKairosExecution(
+          req,
+          "rollback"
+        );
+
+      if (!authorization.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            mode:
+              "ROLLBACK_EXECUTION_BLOCKED",
+            rollbackId,
+            action: authorization.action,
+            error: authorization.error,
+            dryRunAvailable: true,
+            executeRequired: true,
+            message:
+              "La ejecución real del rollback requiere autorización mediante la Puerta Kairos.",
+          },
+          {
+            status: authorization.status,
+          }
+        );
+      }
+
+      executionAuthorized = true;
+    }
 
     const includePaths = normalizePathList(
       body?.includePaths
@@ -486,43 +523,11 @@ export async function POST(req: Request) {
     }
 
     /*
-     * FRONTERA SOBERANA DE ROLLBACK
+     * EJECUCIÓN REAL AUTORIZADA
      *
-     * Todo lo anterior puede calcularse como dry run.
-     * A partir de aquí comienzan las escrituras reales,
-     * restauración, build y deploy.
+     * La Puerta Kairos fue validada al comienzo
+     * del flujo cuando execute=true.
      */
-    const authorization =
-      authorizeKairosExecution(
-        req,
-        "rollback"
-      );
-
-    if (!authorization.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          mode:
-            "ROLLBACK_EXECUTION_BLOCKED",
-          rollbackId,
-          action: authorization.action,
-          error: authorization.error,
-          dryRunAvailable: true,
-          executeRequired: true,
-          filesCount: items.length,
-          backupRoot: path.relative(
-            ROOT,
-            backupRoot
-          ),
-          message:
-            "El plan de rollback fue preparado, pero la restauración real requiere el Sello Kairos.",
-        },
-        {
-          status: authorization.status,
-        }
-      );
-    }
-
     const safetyRoot = path.join(
       PRE_ROLLBACK_DIR,
       rollbackId
@@ -737,7 +742,9 @@ export async function POST(req: Request) {
       durationMs: Date.now() - startedAt,
     };
 
-    writeHistory(failure);
+    if (executionAuthorized) {
+      writeHistory(failure);
+    }
 
     return NextResponse.json(
       failure,
