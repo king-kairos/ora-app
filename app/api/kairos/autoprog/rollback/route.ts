@@ -655,49 +655,26 @@ export async function POST(req: Request) {
     }
 
     /*
-      Se usa el deploy soberano existente para que
-      reinicio y publicación sigan bajo el flujo actual.
-    */
-    const seal = String(
-      req.headers.get("x-kairos-seal") || ""
-    );
-
-    const deploy = await fetch(
-      "http://127.0.0.1:3001/api/ora/system/deploy",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-kairos-seal": seal,
-        },
-        body: JSON.stringify({
-          proposalId:
-            proposalId || rollbackId,
-          rollbackId,
-          source: "rollback-engine",
-        }),
-      }
-    )
-      .then(async (res) => {
-        const data = await res
-          .json()
-          .catch(() => ({}));
-
-        return {
-          ok: res.ok && data?.ok !== false,
-          status: res.status,
-          data,
-        };
-      })
-      .catch((error: any) => ({
-        ok: false,
-        status: 500,
-        data: {
-          error:
-            error?.message ||
-            "ROLLBACK_DEPLOY_CALL_FAILED",
-        },
-      }));
+     * FRONTERA ENTRE ROLLBACK Y DEPLOY
+     *
+     * El rollback ya restauró los archivos y validó
+     * que el proyecto compila. No reinicia procesos ni
+     * publica automáticamente.
+     *
+     * El deploy permanece como una acción soberana
+     * independiente que exige su propia autorización.
+     */
+    const deploy = {
+      ok: true,
+      pending: true,
+      executed: false,
+      action: "deploy",
+      endpoint:
+        "/api/ora/system/deploy",
+      kairosGateRequired: true,
+      message:
+        "Rollback validado. El deploy debe autorizarse y ejecutarse por separado.",
+    };
 
     const successRecord = {
       id: rollbackId,
@@ -718,6 +695,7 @@ export async function POST(req: Request) {
       excludePaths,
       buildPassed: true,
       deploy,
+      deployPending: true,
       smokeTestPending: true,
       createdAt: new Date().toISOString(),
       durationMs: Date.now() - startedAt,
@@ -728,7 +706,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ...successRecord,
       message:
-        "Rollback restaurado, build validado y deploy soberano iniciado. Ejecute Smoke Test final.",
+        "Rollback restaurado y build validado. El deploy soberano queda pendiente de autorización separada.",
     });
   } catch (error: any) {
     const failure = {
