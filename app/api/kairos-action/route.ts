@@ -102,11 +102,16 @@ async function callInternal(
   const base = getInternalBase(req);
   const url = `${base}${targetPath}`;
 
-  const seal = String(process.env.KAIROS_SEAL || "").trim();
+  const receivedSeal = String(
+    req.headers.get("x-kairos-seal") ||
+    req.headers.get("kairos-seal") ||
+    ""
+  ).trim();
+
   const headers = new Headers(init?.headers || {});
 
-  if (seal && !headers.has("x-kairos-seal")) {
-    headers.set("x-kairos-seal", seal);
+  if (receivedSeal && !headers.has("x-kairos-seal")) {
+    headers.set("x-kairos-seal", receivedSeal);
   }
 
   return fetch(url, {

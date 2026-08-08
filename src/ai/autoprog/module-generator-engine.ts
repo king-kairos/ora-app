@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import { createProposal } from "./proposal-engine";
 
 type ModuleTemplateInput = {
@@ -17,17 +15,23 @@ function safeName(input: string) {
     .replace(/^-|-$/g, "");
 }
 
-function ensureDir(dirPath: string) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
+function pascalCase(input: string) {
+  return safeName(input)
+    .split("-")
+    .filter(Boolean)
+    .map(
+      (part) =>
+        part.charAt(0).toUpperCase() +
+        part.slice(1)
+    )
+    .join("");
 }
 
-function fileExists(filePath: string) {
-  return fs.existsSync(filePath);
-}
-
-function buildPageTsx(moduleName: string, title: string, description: string) {
+function buildPageTsx(
+  moduleName: string,
+  title: string,
+  description: string
+) {
   return `export default function ${pascalCase(moduleName)}Page() {
   return (
     <div
@@ -42,8 +46,14 @@ function buildPageTsx(moduleName: string, title: string, description: string) {
       <h1>${title}</h1>
       <p>${description}</p>
 
-      <div style={{ marginTop: "30px", border: "1px solid #00ff88", padding: "16px" }}>
-        <p>Módulo generado automáticamente por ORA.</p>
+      <div
+        style={{
+          marginTop: "30px",
+          border: "1px solid #00ff88",
+          padding: "16px",
+        }}
+      >
+        <p>Módulo propuesto automáticamente por ORA.</p>
         <p>Nombre interno: ${moduleName}</p>
       </div>
     </div>
@@ -52,7 +62,11 @@ function buildPageTsx(moduleName: string, title: string, description: string) {
 `;
 }
 
-function buildRouteTs(moduleName: string, title: string, description: string) {
+function buildRouteTs(
+  moduleName: string,
+  title: string,
+  description: string
+) {
   return `export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -69,7 +83,9 @@ export async function GET() {
 `;
 }
 
-function buildLogicTs(moduleName: string) {
+function buildLogicTs(
+  moduleName: string
+) {
   return `export function get${pascalCase(moduleName)}Info() {
   return {
     ok: true,
@@ -80,88 +96,116 @@ function buildLogicTs(moduleName: string) {
 `;
 }
 
-function pascalCase(input: string) {
-  return safeName(input)
-    .split("-")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
-}
+/**
+ * GENERADOR SOBERANO DE MÓDULOS
+ *
+ * Esta función NO modifica producción.
+ *
+ * Permitido:
+ * - interpretar;
+ * - construir contenido en memoria;
+ * - preparar y persistir una proposal.
+ *
+ * Prohibido aquí:
+ * - mkdir sobre targets productivos;
+ * - writeFile sobre targets productivos;
+ * - registrar el módulo como activo;
+ * - build;
+ * - restart;
+ * - deploy.
+ *
+ * La mutación real ocurre posteriormente
+ * mediante Apply bajo la Puerta Kairos.
+ */
+export async function generateModuleTemplate(
+  input: ModuleTemplateInput
+) {
+  const moduleName =
+    safeName(input.moduleName);
 
-export async function generateModuleTemplate(input: ModuleTemplateInput) {
-  const moduleName = safeName(input.moduleName);
-  const title = input.title?.trim() || `ORA — ${pascalCase(moduleName)}`;
+  const title =
+    input.title?.trim() ||
+    `ORA — ${pascalCase(moduleName)}`;
+
   const description =
     input.description?.trim() ||
-    `Módulo ${moduleName} generado automáticamente por ORA.`;
+    `Módulo ${moduleName} propuesto automáticamente por ORA.`;
 
   if (!moduleName) {
     return {
       ok: false,
-      error: "moduleName es obligatorio",
+      error:
+        "moduleName es obligatorio",
     };
   }
 
-  const appDir = path.join(process.cwd(), "app", moduleName);
-  const apiDir = path.join(process.cwd(), "app", "api", moduleName);
-  const logicDir = path.join(process.cwd(), "src", "ai", "modules", moduleName);
+  const files = [
+    {
+      path:
+        `app/${moduleName}/page.tsx`,
+      mode: "full-file" as const,
+      content: buildPageTsx(
+        moduleName,
+        title,
+        description
+      ),
+    },
+    {
+      path:
+        `app/api/${moduleName}/route.ts`,
+      mode: "full-file" as const,
+      content: buildRouteTs(
+        moduleName,
+        title,
+        description
+      ),
+    },
+    {
+      path:
+        `src/ai/modules/${moduleName}/index.ts`,
+      mode: "full-file" as const,
+      content:
+        buildLogicTs(moduleName),
+    },
+  ];
 
-  ensureDir(appDir);
-  ensureDir(apiDir);
-  ensureDir(logicDir);
-
-  const pageFile = path.join(appDir, "page.tsx");
-  const routeFile = path.join(apiDir, "route.ts");
-  const logicFile = path.join(logicDir, "index.ts");
-
-  const createdFiles: string[] = [];
-  const skippedFiles: string[] = [];
-
-  if (!fileExists(pageFile)) {
-    fs.writeFileSync(pageFile, buildPageTsx(moduleName, title, description), "utf8");
-    createdFiles.push(`app/${moduleName}/page.tsx`);
-  } else {
-    skippedFiles.push(`app/${moduleName}/page.tsx`);
-  }
-
-  if (!fileExists(routeFile)) {
-    fs.writeFileSync(routeFile, buildRouteTs(moduleName, title, description), "utf8");
-    createdFiles.push(`app/api/${moduleName}/route.ts`);
-  } else {
-    skippedFiles.push(`app/api/${moduleName}/route.ts`);
-  }
-
-  if (!fileExists(logicFile)) {
-    fs.writeFileSync(logicFile, buildLogicTs(moduleName), "utf8");
-    createdFiles.push(`src/ai/modules/${moduleName}/index.ts`);
-  } else {
-    skippedFiles.push(`src/ai/modules/${moduleName}/index.ts`);
-  }
-
-  const proposal = await createProposal({
-    title: `ORA generó estructura base para módulo ${moduleName}`,
-    summary: `Se creó la plantilla inicial del módulo ${moduleName} con página, ruta API y lógica base.`,
-    type: "feature",
-    risk: "low",
-    reason: "Generación automática de módulo base a partir de intención estructural.",
-    proposedBy: "arturo",
-    source: "scan",
-    tags: ["module", "generator", "autoprog", moduleName],
-    files: createdFiles.map((file) => ({
-      path: file,
-      mode: "full-file",
-      content: fs.readFileSync(file, "utf8"),
-    })),
-  });
+  const proposal =
+    await createProposal({
+      title:
+        `ORA propone estructura base para módulo ${moduleName}`,
+      summary:
+        `Propuesta para crear la plantilla inicial del módulo ${moduleName} con página, ruta API y lógica base.`,
+      type: "feature",
+      risk: "low",
+      reason:
+        "Generación automática de propuesta a partir de intención estructural. Ningún archivo productivo fue modificado durante la generación.",
+      proposedBy: "arturo",
+      source: "scan",
+      tags: [
+        "module",
+        "generator",
+        "autoprog",
+        moduleName,
+      ],
+      files,
+    });
 
   return {
     ok: true,
+    mode:
+      "MODULE_GENERATOR_PROPOSAL_ONLY",
     moduleName,
     title,
     description,
-    createdFiles,
-    skippedFiles,
+    createdFiles: [],
+    targetFiles:
+      files.map((file) => file.path),
     proposal,
-    message: `ORA generó la plantilla base del módulo ${moduleName}.`,
+    proposalId:
+      proposal.id,
+    mutationExecuted: false,
+    applyRequired: true,
+    message:
+      `ORA preparó una propuesta para el módulo ${moduleName}. No se modificaron archivos reales.`,
   };
 }

@@ -357,6 +357,48 @@ export async function POST(req: Request) {
         );
       }
 
+      /*
+       * Rollback restaura archivos y posteriormente
+       * ejecuta npm run build.
+       *
+       * Son dos capacidades reales distintas:
+       *
+       *   rollback       -> restauración
+       *   modify_runtime -> build
+       *
+       * Ambas deben estar autorizadas antes de comenzar
+       * cualquier mutación.
+       */
+      const buildAuthorization =
+        authorizeKairosExecution(
+          req,
+          "modify_runtime"
+        );
+
+      if (!buildAuthorization.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            mode:
+              "ROLLBACK_BUILD_AUTHORIZATION_BLOCKED",
+            rollbackId,
+            stage:
+              "build_authorization",
+            action:
+              buildAuthorization.action,
+            error:
+              buildAuthorization.error,
+            executeRequired: true,
+            message:
+              "Rollback autorizado, pero falta autorización para modificar runtime/build.",
+          },
+          {
+            status:
+              buildAuthorization.status,
+          }
+        );
+      }
+
       executionAuthorized = true;
     }
 

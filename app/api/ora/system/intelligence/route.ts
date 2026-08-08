@@ -13,7 +13,7 @@ const HISTORY_FILE = path.join(
 
 function hasValidSeal(req: Request) {
   const expected = String(process.env.KAIROS_SEAL || "").trim();
-  if (!expected) return true;
+  if (!expected) return false;
 
   const received = String(req.headers.get("x-kairos-seal") || "").trim();
   return received === expected;

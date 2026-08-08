@@ -20,7 +20,7 @@ const PATCH_DIR = path.join(
 function hasValidSeal(req: Request) {
   const expected = String(process.env.KAIROS_SEAL || "").trim();
 
-  if (!expected) return true;
+  if (!expected) return false;
 
   const received = String(
     req.headers.get("x-kairos-seal") || ""

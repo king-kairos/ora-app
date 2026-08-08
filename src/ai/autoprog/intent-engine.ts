@@ -1,5 +1,4 @@
 import { generateModuleTemplate } from "./module-generator-engine";
-import { registerModule } from "./module-registry";
 
 type IntentInput = {
   intent: string;
@@ -99,20 +98,21 @@ export async function runIntentEngine(input: IntentInput) {
     return generated;
   }
 
-  const registry = registerModule({
-    moduleName: parsed.moduleName,
-    title: parsed.title,
-    description: parsed.description,
-    branch: parsed.branch,
-    source: "intent-engine",
-  });
-
   return {
     ok: true,
+    mode: "INTENT_PROPOSAL_ONLY",
     intent: input.intent,
     parsed,
     generated,
-    registry,
-    message: `ORA interpretó la intención y generó el módulo ${parsed.moduleName}.`,
+    registry: {
+      pending: true,
+      registered: false,
+      moduleName: parsed.moduleName,
+      message:
+        "El registro real del módulo queda pendiente hasta después de un Apply autorizado.",
+    },
+    mutationExecuted: false,
+    applyRequired: true,
+    message: `ORA interpretó la intención y preparó una propuesta para el módulo ${parsed.moduleName}.`,
   };
 }

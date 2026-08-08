@@ -6,12 +6,8 @@ function readKairosSeal() {
   if (typeof window === "undefined") return "";
 
   return String(
-    localStorage.getItem("KAIROS_PATCH_SECRET") ||
-      localStorage.getItem("kairos_patch_secret") ||
-      localStorage.getItem("KAIROS_SEAL") ||
+    localStorage.getItem("KAIROS_SEAL") ||
       localStorage.getItem("kairos_seal") ||
-      sessionStorage.getItem("KAIROS_PATCH_SECRET") ||
-      sessionStorage.getItem("kairos_patch_secret") ||
       sessionStorage.getItem("KAIROS_SEAL") ||
       sessionStorage.getItem("kairos_seal") ||
       ""

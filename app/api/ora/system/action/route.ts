@@ -2,7 +2,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
@@ -42,8 +42,15 @@ const ACTIONS: Record<string, string> = {
 
   logs_core: "pm2 logs ora --lines 80 --nostream",
 
+  /*
+   * deploy_full permanece como comando de cabina,
+   * pero YA NO contiene un ejecutor propio.
+   *
+   * Su ejecución real se delega posteriormente
+   * al endpoint canónico /api/ora/system/deploy.
+   */
   deploy_full:
-    "npm run build && pm2 restart ora-front && pm2 restart ora",
+    "__KAIROS_CANONICAL_DEPLOY__",
 };
 
 const READ_ONLY_ACTIONS = new Set([
@@ -196,6 +203,36 @@ async function runCommand(command: string) {
   };
 }
 
+/*
+ * SELF-RESTART SOBERANO
+ *
+ * restart_front reinicia el mismo proceso que atiende
+ * esta petición. Ejecutarlo con await/exec puede matar
+ * la conexión antes de entregar la respuesta y producir
+ * un falso HTTP 500 aunque PM2 sí haya reiniciado.
+ *
+ * La autorización ocurre ANTES en POST mediante
+ * authorizeKairosExecution(req, "restart_front").
+ *
+ * Aquí solamente se difiere el efecto ya autorizado.
+ */
+function scheduleFrontRestart() {
+  const child = spawn(
+    "bash",
+    [
+      "-lc",
+      "sleep 2; pm2 restart ora-front --update-env >/tmp/kairos-system-action-restart-front.log 2>&1",
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+    }
+  );
+
+  child.unref();
+}
+
 /* =========================
    POST
 ========================= */
@@ -273,6 +310,123 @@ export async function POST(req: Request) {
           }
         );
       }
+    }
+
+    /*
+     * FRONTERA ÚNICA DE DEPLOY
+     *
+     * SYSTEM ACTION puede recibir la orden deploy_full,
+     * pero no ejecuta build/restart por sí mismo.
+     *
+     * Reenvía EXACTAMENTE el sello recibido a
+     * /api/ora/system/deploy.
+     *
+     * No lee KAIROS_SEAL desde process.env.
+     * No fabrica autoridad.
+     * El endpoint canónico vuelve a validar el Gate.
+     */
+    if (action === "deploy_full") {
+      const receivedSeal = String(
+        req.headers.get("x-kairos-seal") ||
+        req.headers.get("kairos-seal") ||
+        ""
+      ).trim();
+
+      const deployResponse = await fetch(
+        "http://127.0.0.1:3000/api/ora/system/deploy",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-kairos-seal": receivedSeal,
+          },
+          body: JSON.stringify({}),
+          cache: "no-store",
+        }
+      );
+
+      const deployText =
+        await deployResponse.text();
+
+      let deployData: any = {};
+
+      try {
+        deployData =
+          deployText
+            ? JSON.parse(deployText)
+            : {};
+      } catch {
+        deployData = {
+          raw: deployText,
+        };
+      }
+
+      appendHistory({
+        ts: Date.now(),
+        ok:
+          deployResponse.ok &&
+          deployData?.ok !== false,
+        action,
+        command:
+          "CANONICAL:/api/ora/system/deploy",
+        delegated: true,
+        canonicalDeploy: true,
+        status:
+          deployResponse.status,
+      });
+
+      return NextResponse.json(
+        {
+          ...deployData,
+          delegatedBy:
+            "/api/ora/system/action",
+          requestedAction:
+            "deploy_full",
+          canonicalEndpoint:
+            "/api/ora/system/deploy",
+        },
+        {
+          status:
+            deployResponse.status,
+        }
+      );
+    }
+
+    /*
+     * restart_front es un self-restart.
+     *
+     * El Gate ya autorizó restart_front arriba.
+     * Se responde primero y el reinicio ocurre
+     * fuera del ciclo de vida de esta petición.
+     */
+    if (action === "restart_front") {
+      scheduleFrontRestart();
+
+      appendHistory({
+        ts: Date.now(),
+        ok: true,
+        action,
+        command:
+          "DETACHED:pm2 restart ora-front --update-env",
+        scheduled: true,
+      });
+
+      return NextResponse.json(
+        {
+          ok: true,
+          action,
+          executionAction:
+            "restart_front",
+          scheduled: true,
+          detached: true,
+          delayMs: 2000,
+          message:
+            "Reinicio de ora-front autorizado y programado fuera de la petición.",
+        },
+        {
+          status: 202,
+        }
+      );
     }
 
     const result = await runCommand(command);

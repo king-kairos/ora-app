@@ -48,6 +48,18 @@ function readStoredPatchSecret() {
   ).trim();
 }
 
+function readStoredKairosSeal() {
+  if (typeof window === "undefined") return "";
+
+  return String(
+    localStorage.getItem("KAIROS_SEAL") ||
+      localStorage.getItem("kairos_seal") ||
+      sessionStorage.getItem("KAIROS_SEAL") ||
+      sessionStorage.getItem("kairos_seal") ||
+      ""
+  ).trim();
+}
+
 function statusColor(status: string) {
   switch (status) {
     case "pending":
@@ -358,15 +370,22 @@ export default function KairosPage() {
   async function onPublicar(id: string) {
     setBusy(true);
     try {
-      const patchSecret = readStoredPatchSecret();
-      // 1. Publica el patch normalmente
+      const kairosSeal = readStoredKairosSeal();
+
+      if (!kairosSeal) {
+        alert("Falta KAIROS_SEAL. El deploy soberano no puede ejecutarse.");
+        return;
+      }
+
+      // 1. Publica/firma el patch mediante su protocolo propio.
       await oraApi.patchPublish(id);
-      // 2. Dispara el deploy y lee la respuesta JSON real
+
+      // 2. El deploy usa exclusivamente autoridad KAIROS_SEAL.
       const res = await fetch("/api/ora/system/deploy", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-kairos-seal": patchSecret,
+          "x-kairos-seal": kairosSeal,
         },
       });
       const data = await res.json();

@@ -25,7 +25,7 @@ function validSeal(req: Request) {
     process.env.KAIROS_SEAL || ""
   ).trim();
 
-  if (!expected) return true;
+  if (!expected) return false;
 
   return String(
     req.headers.get("x-kairos-seal") || ""

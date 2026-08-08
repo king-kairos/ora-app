@@ -2494,45 +2494,26 @@ function mergeHomepageControlContent(current: any, incoming: any) {
 }
 
 // ================== PUBLISH ENGINE ==================
-async function runShellCommand(command: string, cwd = PROJECT_ROOT) {
-  const { stdout, stderr } = await execAsync(command, {
-    cwd,
-    maxBuffer: 1024 * 1024 * 20,
-    env: process.env,
-    timeout: 1000 * 60 * 5,
-  });
 
-  return {
-    command,
-    stdout: String(stdout || "").trim(),
-    stderr: String(stderr || "").trim(),
-  };
-}
-
-function inferPublishPlanFromFiles(filePaths: string[]) {
-  const paths = Array.isArray(filePaths) ? filePaths : [];
-  const touchesFrontend = paths.some(
-    (p) =>
-      p.startsWith("app/") ||
-      p.startsWith("public/") ||
-      p.endsWith(".tsx") ||
-      p.endsWith(".jsx")
-  );
-  const touchesBackend = paths.some((p) => p.startsWith("src/"));
-
-  return {
-    touchesFrontend,
-    touchesBackend,
-    needsBuild: touchesFrontend,
-    needsOraRestart: touchesBackend,
-    needsFrontRestart: touchesFrontend,
-  };
-}
-
-// ✅ FUNCIÓN PUBLISH CORREGIDA (ya no aplica)
+// ================== PUBLISH PREPARATION ==================
+/**
+ * PUBLISH ya no ejecuta build ni restart.
+ *
+ * Su responsabilidad es exclusivamente validar que una
+ * proposal esté lista para pasar a la frontera soberana
+ * única de deploy:
+ *
+ *   /api/ora/system/deploy
+ *
+ * Efectos reales de build/restart pertenecen únicamente
+ * a la acción "deploy".
+ */
 async function publishProposalById(id: string, req: any) {
   const proposal = await resolveCanonicalProposal(id);
-  if (!proposal) throw new Error("NOT_FOUND");
+
+  if (!proposal) {
+    throw new Error("NOT_FOUND");
+  }
 
   if (proposal.status !== "applied") {
     throw new Error("PUBLISH_REQUIRES_APPLIED");
@@ -2542,17 +2523,6 @@ async function publishProposalById(id: string, req: any) {
     throw new Error("PUBLISH_MISSING_KAIROS_APPROVAL");
   }
 
-  const filePaths =
-    proposal.targetFiles ||
-    proposal.files?.map((f: any) => f.path).filter(Boolean) ||
-    [];
-
-  /*
-   * FRONTERA SOBERANA DE PUBLICACIÓN
-   *
-   * Publicar puede ejecutar build y reinicios.
-   * BYPASS_LOCAL no concede autoridad de ejecución.
-   */
   const authorization =
     authorizeKairosExecution(
       new Request(
@@ -2582,69 +2552,37 @@ async function publishProposalById(id: string, req: any) {
     throw error;
   }
 
-  const plan = inferPublishPlanFromFiles(filePaths);
-  const commands: any[] = [];
-  const warnings: string[] = [];
-
-  if (plan.needsBuild) {
-    try {
-      commands.push(await runShellCommand("npm run build"));
-    } catch (e: any) {
-      await coherenceAppend({
-        type: "publish-build-failed",
-        proposalId: id,
-        files: filePaths,
-        error: e?.stderr || e?.stdout || e?.message,
-      });
-
-      throw new Error(
-        `PUBLISH_BUILD_FAIL: ${
-          e?.stderr || e?.stdout || e?.message || "UNKNOWN"
-        }`
-      );
-    }
-  }
-
-  if (plan.needsOraRestart) {
-    try {
-      commands.push(await runShellCommand("pm2 restart ora"));
-    } catch (e: any) {
-      warnings.push(
-        `PM2_ORA_RESTART_FAIL: ${
-          e?.stderr || e?.stdout || e?.message || "UNKNOWN"
-        }`
-      );
-    }
-  }
-
-  if (plan.needsFrontRestart) {
-    try {
-      commands.push(await runShellCommand("pm2 restart ora-front"));
-    } catch (e: any) {
-      warnings.push(
-        `PM2_ORA_FRONT_RESTART_FAIL: ${
-          e?.stderr || e?.stdout || e?.message || "UNKNOWN"
-        }`
-      );
-    }
-  }
+  const filePaths =
+    proposal.targetFiles ||
+    proposal.files
+      ?.map((f: any) => f.path)
+      .filter(Boolean) ||
+    [];
 
   await coherenceAppend({
-    type: "publish",
+    type: "publish-ready",
     proposalId: id,
     files: filePaths,
-    plan,
+    deployEndpoint:
+      "/api/ora/system/deploy",
   });
 
   return {
     ok: true,
     proposalId: id,
     publish: {
-      mode: "build-restart-only",
-      plan,
-      commands,
-      warnings,
+      mode:
+        "PUBLISH_VALIDATED_DEPLOY_REQUIRED",
+      executed: false,
+      buildExecuted: false,
+      restartExecuted: false,
+      deployExecuted: false,
+      deployRequired: true,
+      endpoint:
+        "/api/ora/system/deploy",
     },
+    message:
+      "Proposal validada para publicación. El deploy soberano debe ejecutarse por /api/ora/system/deploy.",
   };
 }
 

@@ -37,20 +37,59 @@ export async function POST(req: Request) {
   let operationId = "";
 
   try {
-    const authorization = authorizeKairosExecution(
-      req,
-      "restart_front"
-    );
+    /*
+     * FINALIZE produce dos efectos reales distintos:
+     *
+     * 1. npm run build       -> modify_runtime
+     * 2. pm2 restart front   -> restart_front
+     *
+     * Ambos deben estar explícitamente autorizados.
+     * Una sola acción no puede conceder autoridad
+     * implícita sobre el otro efecto.
+     */
 
-    if (!authorization.ok) {
+    const buildAuthorization =
+      authorizeKairosExecution(
+        req,
+        "modify_runtime"
+      );
+
+    if (!buildAuthorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          action: authorization.action,
-          error: authorization.error,
+          stage: "build_authorization",
+          action:
+            buildAuthorization.action,
+          error:
+            buildAuthorization.error,
         },
         {
-          status: authorization.status,
+          status:
+            buildAuthorization.status,
+        }
+      );
+    }
+
+    const restartAuthorization =
+      authorizeKairosExecution(
+        req,
+        "restart_front"
+      );
+
+    if (!restartAuthorization.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          stage: "restart_authorization",
+          action:
+            restartAuthorization.action,
+          error:
+            restartAuthorization.error,
+        },
+        {
+          status:
+            restartAuthorization.status,
         }
       );
     }

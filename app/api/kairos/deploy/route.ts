@@ -25,7 +25,7 @@ export async function POST() {
         deploy:
           "/api/ora/system/deploy",
         autoprogDeploy:
-          "/api/ora/autoprog/deploy",
+          "/api/ora/system/deploy",
       },
       kairosGateRequiredOnReplacement:
         true,

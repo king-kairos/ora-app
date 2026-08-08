@@ -8,8 +8,12 @@ function getSeal(req: Request) {
 
 function hasValidSeal(req: Request) {
   const expected = String(process.env.KAIROS_SEAL || "").trim();
-  if (!expected) return true;
-  return getSeal(req) === expected;
+  const received = getSeal(req);
+
+  if (!expected) return false;
+  if (!received) return false;
+
+  return received === expected;
 }
 
 async function jsonFetch(url: string, seal: string, body: any) {

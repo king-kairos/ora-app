@@ -70,7 +70,10 @@ async function markProposalAsPublished(id: string) {
 }
 
 
-async function runSmokeTestAfterDeploy(proposalId: string | null) {
+async function runSmokeTestAfterDeploy(
+  proposalId: string | null,
+  receivedSeal: string
+) {
   const branchFromProposal = proposalId
     ? await import("../../../../../src/ai/autoprog/patchStore")
         .then(async (m: any) => {
@@ -90,7 +93,7 @@ async function runSmokeTestAfterDeploy(proposalId: string | null) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-kairos-seal": String(process.env.KAIROS_SEAL || ""),
+      "x-kairos-seal": receivedSeal,
     },
     body: JSON.stringify({ branch }),
   });
@@ -125,6 +128,12 @@ export async function POST(req: Request) {
         }
       );
     }
+    const receivedSeal = String(
+      req.headers.get("x-kairos-seal") ||
+      req.headers.get("kairos-seal") ||
+      ""
+    ).trim();
+
     const body = await req.json().catch(() => ({}));
     const proposalId = String(body?.proposalId || body?.id || "").trim();
     const logs: any[] = [];
@@ -138,7 +147,10 @@ export async function POST(req: Request) {
     runDetached("pm2 restart ora --update-env", 3000);
 
     await new Promise((resolve) => setTimeout(resolve, 7000));
-    const smokeTest = await runSmokeTestAfterDeploy(proposalId || null);
+    const smokeTest = await runSmokeTestAfterDeploy(
+      proposalId || null,
+      receivedSeal
+    );
 
     return NextResponse.json({
       ok: smokeTest.ok === true,

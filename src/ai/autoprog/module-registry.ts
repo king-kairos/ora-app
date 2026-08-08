@@ -7,75 +7,90 @@ export type RegisteredModule = {
   title: string;
   description: string;
   branch: string;
-  source: "intent-engine" | "module-generator" | "manual";
+  source:
+    | "intent-engine"
+    | "module-generator"
+    | "manual";
   createdAt: string;
   status: "active";
 };
 
 function registryPath() {
-  return path.join(process.cwd(), "ora-data", "module-registry.json");
+  return path.join(
+    process.cwd(),
+    "ora-data",
+    "module-registry.json"
+  );
 }
 
-function ensureRegistryFile() {
+/**
+ * Lectura pura.
+ *
+ * Consultar el registry nunca debe crear
+ * carpetas ni archivos.
+ */
+export function readModuleRegistry():
+  RegisteredModule[] {
   const filePath = registryPath();
-  const dir = path.dirname(filePath);
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
 
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([], null, 2), "utf8");
+    return [];
   }
-}
-
-export function readModuleRegistry(): RegisteredModule[] {
-  ensureRegistryFile();
 
   try {
-    const raw = fs.readFileSync(registryPath(), "utf8");
-    const data = JSON.parse(raw);
+    const raw =
+      fs.readFileSync(
+        filePath,
+        "utf8"
+      );
 
-    return Array.isArray(data) ? data : [];
+    const data =
+      JSON.parse(raw);
+
+    return Array.isArray(data)
+      ? data
+      : [];
   } catch {
     return [];
   }
 }
 
-export function writeModuleRegistry(items: RegisteredModule[]) {
-  ensureRegistryFile();
-  fs.writeFileSync(registryPath(), JSON.stringify(items, null, 2), "utf8");
+/**
+ * MUTACIÓN LEGACY RETIRADA.
+ *
+ * El registro real debe integrarse después
+ * de un Apply autorizado por la Puerta Kairos.
+ */
+export function writeModuleRegistry(
+  _items: RegisteredModule[]
+) {
+  throw new Error(
+    "DIRECT_MODULE_REGISTRY_MUTATION_RETIRED"
+  );
 }
 
+/**
+ * MUTACIÓN LEGACY RETIRADA.
+ *
+ * Pensar/proponer un módulo no puede
+ * declararlo activo en el registry.
+ */
 export function registerModule(
-  input: Omit<RegisteredModule, "id" | "createdAt" | "status">
+  input: Omit<
+    RegisteredModule,
+    "id" | "createdAt" | "status"
+  >
 ) {
-  const items = readModuleRegistry();
-
-  const existing = items.find((item) => item.moduleName === input.moduleName);
-  if (existing) {
-    return {
-      ok: true,
-      created: false,
-      item: existing,
-      message: `El módulo ${input.moduleName} ya estaba registrado.`,
-    };
-  }
-
-  const item: RegisteredModule = {
-    id: `module_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-    createdAt: new Date().toISOString(),
-    status: "active",
-    ...input,
-  };
-
-  items.unshift(item);
-  writeModuleRegistry(items);
-
   return {
     ok: true,
-    created: true,
-    item,
-    message: `Módulo ${input.moduleName} registrado correctamente.`,
+    created: false,
+    pending: true,
+    registered: false,
+    item: {
+      ...input,
+      status: "active" as const,
+    },
+    message:
+      `Registro de ${input.moduleName} pendiente de Apply soberano.`,
   };
 }
