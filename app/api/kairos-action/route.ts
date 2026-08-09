@@ -52,32 +52,6 @@ function respond(req: Request, ok: boolean, payload: Record<string, any>) {
   return redirectHtml("/kairos");
 }
 
-function proposalFilePath(proposalId: string) {
-  return path.join(process.cwd(), "ora-data", "proposals", `${proposalId}.json`);
-}
-
-function markProposalAppliedLocally(
-  proposalId: string
-) {
-  const filePath = proposalFilePath(proposalId);
-
-  if (!fs.existsSync(filePath)) return false;
-
-  const raw = fs.readFileSync(filePath, "utf8");
-  const data = JSON.parse(raw);
-
-  data.status = "applied";
-  data.updatedAt = new Date().toISOString();
-  data.appliedAt = data.updatedAt;
-
-  fs.writeFileSync(
-    filePath,
-    JSON.stringify(data, null, 2),
-    "utf8"
-  );
-
-  return true;
-}
 
 function getInternalBase(req: Request) {
   const envBase =
@@ -214,8 +188,6 @@ async function applyProposal(req: Request, proposalId: string) {
         data,
       };
     }
-
-    markProposalAppliedLocally(proposalId);
 
     return {
       ok: true,
