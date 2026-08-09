@@ -12,10 +12,7 @@ import {
 
 import {
   getProposal,
-  setStatus,
 } from "@/ai/autoprog/patchStore";
-
-import { applyPatch } from "@/ai/autoprog/applyPatch";
 import { authorizeKairosExecution } from "@/security/kairosExecutionGate";
 
 import {
@@ -25,6 +22,15 @@ import {
 
 const ROOT = process.cwd();
 const LOCAL_BASE_URL = "http://127.0.0.1:3000";
+
+const ORA_INTERNAL_BASE =
+  String(
+    process.env.ORA_INTERNAL_BASE_URL ||
+      process.env.ORA_API_BASE_URL ||
+      "http://127.0.0.1:3001"
+  )
+    .trim()
+    .replace(/\/+$/, "");
 
 const BLOCKED_EXACT = new Set([
   ".env",
@@ -123,6 +129,60 @@ async function pathExists(relative: string) {
   } catch {
     return false;
   }
+}
+
+async function postCanonicalOra(
+  endpoint: string,
+  seal: string,
+  body: Record<string, unknown> = {}
+) {
+  const response = await fetch(
+    `${ORA_INTERNAL_BASE}${endpoint}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+        Accept:
+          "application/json",
+        "x-kairos-seal":
+          seal,
+      },
+      body:
+        JSON.stringify(body),
+      cache:
+        "no-store",
+    }
+  );
+
+  const data =
+    await readJsonResponse(response);
+
+  if (
+    !response.ok ||
+    data?.ok === false
+  ) {
+    const error: any =
+      new Error(
+        data?.error ||
+          data?.message ||
+          `CANONICAL_ORA_HTTP_${response.status}`
+      );
+
+    error.status =
+      response.status;
+
+    error.upstream =
+      data;
+
+    throw error;
+  }
+
+  return {
+    status:
+      response.status,
+    data,
+  };
 }
 
 async function readJsonResponse(
@@ -299,28 +359,41 @@ export async function POST(req: Request) {
     }
 
     /*
-      Una llamada sellada a este endpoint representa
-      la autorización soberana para ejecutar esta
-      operación concreta.
-    */
+     * KAIROS_ORCHESTRATOR_CANONICAL_APPROVE_V1
+     *
+     * El Orchestrator coordina, pero ya no persiste
+     * el estado approved directamente.
+     *
+     * Orden soberano preservado:
+     *
+     * APPROVE canónico
+     * -> BACKUP selectivo
+     * -> APPLY canónico
+     */
+    const seal = normalizeSeal(
+      req.headers.get("x-kairos-seal")
+    );
+
     if (proposalStatus === "pending") {
       await updateOperation(
         operationId,
         "approving",
         "running",
-        "Aprobando propuesta bajo Sello de Kairos."
+        "Aprobando propuesta mediante backend ORA canónico."
       );
 
-      await setStatus(
-        operation.proposalId,
-        "approved"
+      await postCanonicalOra(
+        `/api/ora/autoprog/approve/${encodeURIComponent(
+          operation.proposalId
+        )}`,
+        seal
       );
 
       await updateOperation(
         operationId,
         "approved",
         "running",
-        "Propuesta aprobada bajo Sello de Kairos."
+        "Propuesta aprobada por backend ORA canónico."
       );
     } else {
       await updateOperation(
@@ -357,10 +430,6 @@ export async function POST(req: Request) {
         "backing_up",
         "running",
         `Creando backup selectivo de ${existingPaths.length} target(s) existente(s).`
-      );
-
-      const seal = normalizeSeal(
-        req.headers.get("x-kairos-seal")
       );
 
       const backupResponse = await fetch(
@@ -431,14 +500,37 @@ export async function POST(req: Request) {
       "Aplicando propuesta autorizada."
     );
 
-    const applyResult = await applyPatch(
-      proposal
-    );
+    /*
+     * KAIROS_ORCHESTRATOR_CANONICAL_APPLY_V1
+     *
+     * La mutación real del filesystem y la persistencia
+     * de applied pertenecen exclusivamente al backend ORA.
+     */
+    const canonicalApply =
+      await postCanonicalOra(
+        `/api/ora/autoprog/apply/${encodeURIComponent(
+          operation.proposalId
+        )}`,
+        seal
+      );
 
-    await setStatus(
-      operation.proposalId,
-      "applied"
-    );
+    const applyResult =
+      canonicalApply?.data?.applied;
+
+    if (
+      !applyResult ||
+      !Array.isArray(
+        applyResult.results
+      )
+    ) {
+      throw new Error(
+        "CANONICAL_APPLY_RESULT_INVALID"
+      );
+    }
+
+    const applyPlan =
+      canonicalApply?.data?.plan ??
+      null;
 
     /*
      * STRATEGIC_CYCLE_AFTER_APPLY_V1
@@ -540,9 +632,15 @@ export async function POST(req: Request) {
         existingPaths,
       backup,
       apply: {
-        ok: applyResult.ok,
-        results: applyResult.results,
-        plan: applyResult.plan,
+        ok: true,
+        results:
+          applyResult.results,
+        plan:
+          applyPlan,
+        canonical:
+          true,
+        canonicalEndpoint:
+          "/api/ora/autoprog/apply/:id",
       },
       strategicCycle,
       operation: finalOperation,
