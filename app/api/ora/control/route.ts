@@ -308,41 +308,37 @@ export async function POST(req: Request) {
     }
 
     if (action === "patchApply") {
-      const id = String(body?.id || "");
-      const filePath = path.join(patchesDir, `${id}.json`);
-      const patch = await readJsonFile(filePath, null);
-
-      if (!patch) {
-        return NextResponse.json(
-          { ok: false, error: "Patch no existe" },
-          { status: 404 }
-        );
-      }
-
-      patch.status = "applied";
-      patch.appliedAt = nowIso();
-      await writeJsonFile(filePath, patch);
-
-      return NextResponse.json({ ok: true, id });
+      return NextResponse.json(
+        {
+          ok: false,
+          retired: true,
+          action: "patchApply",
+          error: "LEGACY_STATUS_ACTION_RETIRED",
+          replacement: "/api/kairos/autoprog/apply",
+          message:
+            "patchApply legacy fue retirado. La aplicación real debe pasar por el flujo soberano protegido.",
+        },
+        {
+          status: 410,
+        }
+      );
     }
 
     if (action === "patchArchive") {
-      const id = String(body?.id || "");
-      const filePath = path.join(patchesDir, `${id}.json`);
-      const patch = await readJsonFile(filePath, null);
-
-      if (!patch) {
-        return NextResponse.json(
-          { ok: false, error: "Patch no existe" },
-          { status: 404 }
-        );
-      }
-
-      patch.status = "archived";
-      patch.archivedAt = nowIso();
-      await writeJsonFile(filePath, patch);
-
-      return NextResponse.json({ ok: true, id });
+      return NextResponse.json(
+        {
+          ok: false,
+          retired: true,
+          action: "patchArchive",
+          error: "LEGACY_STATUS_ACTION_RETIRED",
+          replacement: "/api/ora/autoprog/archive/:id",
+          message:
+            "patchArchive legacy fue retirado. El archivado debe pasar por el backend ORA canónico.",
+        },
+        {
+          status: 410,
+        }
+      );
     }
 
     return NextResponse.json(

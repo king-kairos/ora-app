@@ -1,33 +1,53 @@
-import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function POST(req: Request) {
-  const body = await req.json();
-  const { id } = body;
+import {
+  NextResponse,
+} from "next/server";
 
-  const dir = path.join(process.cwd(), "data/coherencia/proposals");
-
-  const file = fs
-    .readdirSync(dir)
-    .find((f) => f.includes(id));
-
-  if (!file) {
-    return NextResponse.json({ ok: false });
-  }
-
-  const full = path.join(dir, file);
-
-  const data = JSON.parse(
-    fs.readFileSync(full, "utf8")
+/**
+ * KAIROS_DENY_LEGACY_RETIRED
+ *
+ * Esta ruta antigua modificaba directamente archivos
+ * de propuestas bajo data/coherencia/proposals.
+ *
+ * La transición deny canónica pertenece al backend ORA:
+ *
+ *   POST /api/ora/autoprog/deny/:id
+ *
+ * y requiere autoridad Kairos.
+ *
+ * Esta ruta queda conservada únicamente como respuesta
+ * explícita de compatibilidad. No modifica estado.
+ */
+function retiredResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      retired: true,
+      mode:
+        "KAIROS_DENY_LEGACY_RETIRED",
+      error:
+        "LEGACY_STATUS_ROUTE_RETIRED",
+      replacement:
+        "/api/ora/autoprog/deny/:id",
+      directMutation: false,
+      message:
+        "La ruta legacy de deny fue retirada. Use el endpoint canónico protegido.",
+    },
+    {
+      status: 410,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    }
   );
+}
 
-  data.status = "denied";
+export async function GET() {
+  return retiredResponse();
+}
 
-  fs.writeFileSync(
-    full,
-    JSON.stringify(data, null, 2)
-  );
-
-  return NextResponse.json({ ok: true });
+export async function POST() {
+  return retiredResponse();
 }
