@@ -56,9 +56,8 @@ function proposalFilePath(proposalId: string) {
   return path.join(process.cwd(), "ora-data", "proposals", `${proposalId}.json`);
 }
 
-function updateProposalStatus(
-  proposalId: string,
-  status: "applied" | "denied" | "archived"
+function markProposalAppliedLocally(
+  proposalId: string
 ) {
   const filePath = proposalFilePath(proposalId);
 
@@ -67,17 +66,16 @@ function updateProposalStatus(
   const raw = fs.readFileSync(filePath, "utf8");
   const data = JSON.parse(raw);
 
-  data.status = status;
+  data.status = "applied";
   data.updatedAt = new Date().toISOString();
+  data.appliedAt = data.updatedAt;
 
-  if (status === "applied") data.appliedAt = data.updatedAt;
-  if (status === "denied") data.deniedAt = data.updatedAt;
-  if (status === "archived") {
-    data.archivedAt = data.updatedAt;
-    data.archived = true;
-  }
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify(data, null, 2),
+    "utf8"
+  );
 
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   return true;
 }
 
@@ -217,7 +215,7 @@ async function applyProposal(req: Request, proposalId: string) {
       };
     }
 
-    updateProposalStatus(proposalId, "applied");
+    markProposalAppliedLocally(proposalId);
 
     return {
       ok: true,
@@ -252,7 +250,6 @@ async function denyProposal(req: Request, proposalId: string) {
       };
     }
 
-    updateProposalStatus(proposalId, "denied");
 
     return {
       ok: true,
@@ -287,7 +284,6 @@ async function archiveProposal(req: Request, proposalId: string) {
       };
     }
 
-    updateProposalStatus(proposalId, "archived");
 
     return {
       ok: true,
