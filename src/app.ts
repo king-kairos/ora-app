@@ -2361,7 +2361,50 @@ async function listProposalObjects(): Promise<Proposal[]> {
 }
 
 // ================== PROPOSAL OPERATIONS ==================
-async function applyProposalById(id: string) {
+async function applyProposalById(
+  id: string,
+  req: any
+) {
+  /*
+   * KAIROS_CANONICAL_APPLY_GATE_V1
+   *
+   * La autorización vive también dentro del ejecutor real.
+   * Ningún caller interno puede producir una mutación de
+   * filesystem solamente por haber atravesado middleware.
+   *
+   * BYPASS_LOCAL no autoriza apply_patch.
+   */
+  const authorization =
+    authorizeKairosExecution(
+      new Request(
+        "http://127.0.0.1/api/ora/autoprog/apply",
+        {
+          method: "POST",
+          headers: {
+            "x-kairos-seal": String(
+              req?.header?.("x-kairos-seal") ||
+              req?.headers?.["x-kairos-seal"] ||
+              ""
+            ),
+          },
+        }
+      ),
+      "apply_patch"
+    );
+
+  if (!authorization.ok) {
+    const error: any =
+      new Error(authorization.error);
+
+    error.status =
+      authorization.status;
+
+    error.action =
+      authorization.action;
+
+    throw error;
+  }
+
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
 
@@ -4794,7 +4837,7 @@ app.post(
       const approved = await approveProposalById(id, seal);
 
       // 🔥 2. APPLY
-      const applied = await applyProposalById(id);
+      const applied = await applyProposalById(id, req);
 
       await coherenceAppend({
         type: "approve-and-apply",
@@ -4821,108 +4864,7 @@ app.post(
   }
 );
 
-app.post(
-  "/api/ora/autoprog/approve-and-apply/:id",
-  requireKairosSeal,
-  (req, res, next) => {
-    if (canBypassLocal(req)) return next();
-    return requireKairosPatchSig(req, res, next);
-  },
-  criticalLimiter,
-  async (req, res) => {
-    try {
-      const id = String(req.params.id || "").trim();
-      if (!id) {
-        return res.status(400).json({ ok: false, error: "MISSING_ID" });
-      }
 
-      const seal = String(req.header("x-kairos-seal") || "");
-      if (!seal) {
-        return res.status(403).json({ ok: false, error: "SEAL_REQUIRED" });
-      }
-
-      const approved = await approveProposalById(id, seal);
-      const applied = await applyProposalById(id);
-
-      await coherenceAppend({
-        type: "approve-and-apply",
-        proposalId: id,
-        approvedAt: approved?.approved_at || new Date().toISOString(),
-        written: applied?.written || 0,
-        modified: applied?.modified || 0,
-        deleted: applied?.deleted || 0,
-        files: applied?.filePaths || [],
-      });
-
-      return res.json({
-        ok: true,
-        mode: "approve-and-apply",
-        proposal: approved,
-        applied,
-      });
-    } catch (e: any) {
-      return res.status(400).json({
-        ok: false,
-        error: e?.message || "APPROVE_AND_APPLY_FAIL",
-      });
-    }
-  }
-);
-
-app.post(
-  "/api/ora/autoprog/approve-and-apply/:id",
-  requireKairosSeal,
-  (req, res, next) => {
-    if (canBypassLocal(req)) return next();
-    return requireKairosPatchSig(req, res, next);
-  },
-  criticalLimiter,
-  async (req, res) => {
-    try {
-      const id = String(req.params.id || "").trim();
-      if (!id) {
-        return res.status(400).json({
-          ok: false,
-          error: "MISSING_ID",
-        });
-      }
-
-      const seal = String(req.header("x-kairos-seal") || "");
-      if (!seal) {
-        return res.status(403).json({
-          ok: false,
-          error: "SEAL_REQUIRED",
-        });
-      }
-
-      const approved = await approveProposalById(id, seal);
-      const applied = await applyProposalById(id);
-
-      await coherenceAppend({
-        type: "approve-and-apply",
-        proposalId: id,
-        title: applied.title,
-        written: applied.written,
-        modified: applied.modified || 0,
-        deleted: applied.deleted,
-        files: applied.filePaths,
-        approvedAt: approved.approved_at || new Date().toISOString(),
-      });
-
-      return res.json({
-        ok: true,
-        approved,
-        applied,
-        message: "Propuesta aprobada y aplicada con sello Kairos.",
-      });
-    } catch (e: any) {
-      return res.status(400).json({
-        ok: false,
-        error: e?.message || "APPROVE_AND_APPLY_FAIL",
-      });
-    }
-  }
-);
 
 // ================== AUTOPROG APPLY / DENY / ARCHIVE ==================
 app.post(
@@ -4938,7 +4880,7 @@ app.post(
       const id = String(req.params.id || "").trim();
       if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
 
-      const applied = await applyProposalById(id);
+      const applied = await applyProposalById(id, req);
 
       await coherenceAppend({
         type: "apply",
@@ -5286,7 +5228,7 @@ app.post(
       const id = String(req.body?.id || "").trim();
       if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
 
-      const applied = await applyProposalById(id);
+      const applied = await applyProposalById(id, req);
 
       await coherenceAppend({
         type: "apply",
