@@ -1,73 +1,174 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-import { NextResponse } from "next/server";
-import { applyPatch } from "../../../../src/ai/autoprog/applyPatch";
-import { getProposal, setStatus } from "../../../../src/ai/autoprog/patchStore";
-import { authorizeKairosExecution } from "../../../../src/security/kairosExecutionGate";
+import {
+  NextResponse,
+} from "next/server";
 
-export async function POST(req: Request) {
+import {
+  authorizeKairosExecution,
+} from "../../../../src/security/kairosExecutionGate";
+
+/**
+ * AUTOPROG_APPLY_CANONICAL_ADAPTER_V1
+ *
+ * Ruta histórica activa:
+ *
+ *   POST /api/autoprog/apply
+ *
+ * Esta frontera:
+ *
+ * - conserva compatibilidad;
+ * - valida fail-closed con la Puerta Kairos;
+ * - NO ejecuta applyPatch;
+ * - NO persiste status;
+ * - NO escribe archivos.
+ *
+ * Toda mutación real se delega a:
+ *
+ *   POST /api/ora/autoprog/apply/:id
+ *
+ * El backend ORA canónico vuelve a validar internamente
+ * antes de ejecutar cualquier modificación real.
+ */
+
+const ORA_INTERNAL_BASE =
+  String(
+    process.env.ORA_INTERNAL_BASE_URL ||
+      process.env.ORA_API_BASE_URL ||
+      "http://127.0.0.1:3001"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+
+async function safeJson(
+  response: Response
+) {
+  const text =
+    await response.text();
+
   try {
-    const authorization = authorizeKairosExecution(
-      req,
-      "apply_patch"
-    );
+    return text
+      ? JSON.parse(text)
+      : {};
+  } catch {
+    return {
+      raw: text,
+    };
+  }
+}
+
+export async function POST(
+  req: Request
+) {
+  try {
+    const authorization =
+      authorizeKairosExecution(
+        req,
+        "apply_patch"
+      );
 
     if (!authorization.ok) {
       return NextResponse.json(
         {
           ok: false,
-          action: authorization.action,
-          error: authorization.error,
+          action:
+            authorization.action,
+          error:
+            authorization.error,
         },
         {
-          status: authorization.status,
+          status:
+            authorization.status,
         }
       );
     }
 
-    const body = await req.json().catch(() => ({}));
-    const id = String(body?.id || "").trim();
+    const body =
+      await req
+        .json()
+        .catch(() => ({}));
+
+    const id =
+      String(
+        body?.id ||
+        body?.proposalId ||
+        ""
+      ).trim();
 
     if (!id) {
       return NextResponse.json(
-        { ok: false, error: "MISSING_PROPOSAL_ID" },
-        { status: 400 }
+        {
+          ok: false,
+          error:
+            "MISSING_PROPOSAL_ID",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    const proposal = await getProposal(id);
+    const seal =
+      String(
+        req.headers.get(
+          "x-kairos-seal"
+        ) ||
+          req.headers.get(
+            "kairos-seal"
+          ) ||
+          ""
+      ).trim();
 
-    if (!proposal) {
-      return NextResponse.json(
-        { ok: false, error: "PROPOSAL_NOT_FOUND", id },
-        { status: 404 }
+    const response =
+      await fetch(
+        `${ORA_INTERNAL_BASE}/api/ora/autoprog/apply/${encodeURIComponent(
+          id
+        )}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json",
+            "x-kairos-seal":
+              seal,
+          },
+          body:
+            JSON.stringify({}),
+          cache:
+            "no-store",
+        }
       );
-    }
 
-    const result = await applyPatch(proposal);
+    const data =
+      await safeJson(response);
 
-    await setStatus(id, "applied");
-
-    return NextResponse.json({
-      ok: true,
-      applied: {
-        id,
-        title: proposal.title || "Untitled proposal",
-        written: result.results.filter((r) => r.action === "written").length,
-        modified: result.results.filter((r) => r.action === "modified").length,
-        deleted: result.results.filter((r) => r.action === "deleted").length,
-        results: result.results,
-        filePaths: result.results.map((r) => r.path),
+    return NextResponse.json(
+      {
+        ...data,
+        compatibilityAdapter:
+          true,
+        canonicalEndpoint:
+          "/api/ora/autoprog/apply/:id",
       },
-      plan: result.plan,
-    });
+      {
+        status:
+          response.status,
+      }
+    );
   } catch (error: any) {
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "AUTOPROG_APPLY_FAIL",
+        error:
+          error?.message ||
+          "AUTOPROG_APPLY_CANONICAL_ADAPTER_FAILED",
       },
-      { status: 500 }
+      {
+        status: 502,
+      }
     );
   }
 }
