@@ -5956,36 +5956,29 @@ app.post(
   async (req, res) => {
     try {
       /*
-       * La validación explícita evita que BYPASS_LOCAL
-       * autorice una mutación real del filesystem.
+       * KAIROS_PATCH_APPLY_CANONICAL_ADAPTER_V1
+       *
+       * Esta ruta histórica permanece por compatibilidad,
+       * pero ya no ejecuta PatchEngine.applyPatch()
+       * ni persiste status directamente.
+       *
+       * Toda mutación real pasa por applyProposalById(),
+       * el mismo ejecutor canónico utilizado por
+       * /api/ora/autoprog/apply/:id.
+       *
+       * applyProposalById vuelve a validar:
+       * - KAIROS_EXECUTION_GATE / apply_patch;
+       * - proposal approved;
+       * - kairos_approved;
+       * - approved_at;
+       * - integrity_hash;
+       * - archivos;
+       * - persistencia applied;
+       * - versionado e historial.
        */
-      const authorization =
-        authorizeKairosExecution(
-          new Request(
-            "http://127.0.0.1/api/ora/autoprog/patch/apply",
-            {
-              method: "POST",
-              headers: {
-                "x-kairos-seal": String(
-                  req.header("x-kairos-seal") || ""
-                ),
-              },
-            }
-          ),
-          "apply_patch"
-        );
-
-      if (!authorization.ok) {
-        return res
-          .status(authorization.status)
-          .json({
-            ok: false,
-            action: authorization.action,
-            error: authorization.error,
-          });
-      }
-
-      const id = String(req.body?.id || "").trim();
+      const id = String(
+        req.body?.id || ""
+      ).trim();
 
       if (!id) {
         return res.status(400).json({
@@ -5994,43 +5987,58 @@ app.post(
         });
       }
 
-      const proposal = await getProposalStore(id);
+      const applied =
+        await applyProposalById(
+          id,
+          req
+        );
 
-      if (!proposal) {
-        return res.status(404).json({
-          ok: false,
-          error: "PROPOSAL_NOT_FOUND",
-        });
-      }
-
-      if (proposal.status !== "approved") {
-        return res.status(400).json({
-          ok: false,
-          error: "NOT_APPROVED",
-        });
-      }
-
-      await PatchEngine.applyPatch(proposal);
-
-      await setStatusStore(id, "applied");
+      await coherenceAppend({
+        type: "apply",
+        mode:
+          "compatibility-patch-apply",
+        proposalId: id,
+        title: applied.title,
+        written: applied.written,
+        modified:
+          applied.modified || 0,
+        deleted: applied.deleted,
+        files: applied.filePaths,
+      });
 
       return res.json({
         ok: true,
         id,
         status: "applied",
+        applied,
+        compatibilityAdapter: true,
+        canonicalExecutor:
+          "applyProposalById",
+        canonicalEndpoint:
+          "/api/ora/autoprog/apply/:id",
       });
-
     } catch (e: any) {
-      return res.status(500).json({
-        ok: false,
-        error: e.message || "PATCH_APPLY_FAIL",
-      });
+      const status =
+        Number(e?.status) || 400;
+
+      return res
+        .status(status)
+        .json({
+          ok: false,
+          action:
+            e?.action || undefined,
+          error:
+            e?.message ||
+            "PATCH_APPLY_CANONICAL_FAIL",
+        });
     }
   }
 );
 
 
 // ================== BUILDER ESSENCE OPERATIONS ==================
+
+
 app.post("/api/ora/autoprog/builder/generate-operations", requireKairosSeal, strictLimiter, async (req, res) => {
   try {
     const module = (parseModuleId(req.body?.module || "arturo") || "arturo") as ModuleId;
