@@ -10,7 +10,7 @@ import crypto from "crypto";
 import { exec as execCallback } from "child_process";
 import { promisify } from "util";
 import aiRunRoute from "./server/routes/ai-run";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 
 import * as PatchEngine from "./ai/autoprog/applyPatch";
 import { authorizeKairosExecution } from "./security/kairosExecutionGate";
@@ -6828,26 +6828,216 @@ app.get("/api/ora-health/orientaciones", requireKairosSeal, async (_req, res) =>
   }
 });
 
+/**
+ * SYSTEM_DEPLOY_COMPLETION_CONTRACT_V1
+ *
+ * POST:
+ *   autoriza y acepta una ejecución.
+ *   Devuelve deployId + 202.
+ *
+ * GET status:
+ *   observa estado persistido.
+ *
+ * El proceso ORA no puede ser responsable de
+ * declarar exitoso su propio restart_core.
+ *
+ * Por eso la ejecución física pertenece a un
+ * runner externo desacoplado que sobrevive al
+ * reinicio de ora y registra el resultado real.
+ */
+
+const SYSTEM_DEPLOY_STATE_DIR =
+  path.join(
+    PROJECT_ROOT,
+    "data",
+    "system-deploy"
+  );
+
+const SYSTEM_DEPLOY_RUNNER =
+  path.join(
+    PROJECT_ROOT,
+    "scripts",
+    "ora-system-deploy-runner.mjs"
+  );
+
+function ensureSystemDeployStateDir() {
+  fsSync.mkdirSync(
+    SYSTEM_DEPLOY_STATE_DIR,
+    {
+      recursive: true,
+    }
+  );
+}
+
+function validSystemDeployId(
+  deployId: string
+) {
+  return /^deploy-\d+-[a-f0-9]{12}$/.test(
+    deployId
+  );
+}
+
+function systemDeployStateFile(
+  deployId: string
+) {
+  if (
+    !validSystemDeployId(
+      deployId
+    )
+  ) {
+    throw new Error(
+      "INVALID_DEPLOY_ID"
+    );
+  }
+
+  return path.join(
+    SYSTEM_DEPLOY_STATE_DIR,
+    `${deployId}.json`
+  );
+}
+
+function writeSystemDeployState(
+  deployId: string,
+  state: Record<string, unknown>
+) {
+  ensureSystemDeployStateDir();
+
+  const target =
+    systemDeployStateFile(
+      deployId
+    );
+
+  const temporary =
+    `${target}.${process.pid}.tmp`;
+
+  fsSync.writeFileSync(
+    temporary,
+    JSON.stringify(
+      state,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  fsSync.renameSync(
+    temporary,
+    target
+  );
+}
+
+function readSystemDeployState(
+  deployId: string
+) {
+  const target =
+    systemDeployStateFile(
+      deployId
+    );
+
+  if (
+    !fsSync.existsSync(
+      target
+    )
+  ) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(
+      fsSync.readFileSync(
+        target,
+        "utf8"
+      )
+    );
+  } catch {
+    return null;
+  }
+}
+
+app.get(
+  "/api/ora/system/deploy/status/:deployId",
+  requireKairosSeal,
+  async (req, res) => {
+    const deployId =
+      String(
+        req.params.deployId ||
+        ""
+      ).trim();
+
+    if (
+      !validSystemDeployId(
+        deployId
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          error:
+            "INVALID_DEPLOY_ID",
+        });
+    }
+
+    const state =
+      readSystemDeployState(
+        deployId
+      );
+
+    if (!state) {
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          deployId,
+          error:
+            "DEPLOY_STATE_NOT_FOUND",
+        });
+    }
+
+    const status =
+      String(
+        state?.status ||
+        "running"
+      );
+
+    return res.json({
+      ok: true,
+      deployId,
+      status,
+      completed:
+        status ===
+          "succeeded" ||
+        status ===
+          "failed",
+      state,
+    });
+  }
+);
+
 app.post(
   "/api/ora/system/deploy",
   requireKairosSeal,
   async (req, res) => {
     /*
-     * FRONTERA SOBERANA DE DEPLOY EN CORE
+     * FRONTERA SOBERANA DE DEPLOY EN CORE.
      *
-     * requireKairosSeal conserva compatibilidad,
-     * pero BYPASS_LOCAL no puede autorizar deploy.
+     * La autorización ocurre ANTES de crear
+     * estado o iniciar el runner.
      */
     const authorization =
       authorizeKairosExecution(
         new Request(
           "http://127.0.0.1/api/ora/system/deploy",
           {
-            method: "POST",
+            method:
+              "POST",
             headers: {
-              "x-kairos-seal": String(
-                req.header("x-kairos-seal") || ""
-              ),
+              "x-kairos-seal":
+                String(
+                  req.header(
+                    "x-kairos-seal"
+                  ) || ""
+                ),
             },
           }
         ),
@@ -6856,7 +7046,9 @@ app.post(
 
     if (!authorization.ok) {
       return res
-        .status(authorization.status)
+        .status(
+          authorization.status
+        )
         .json({
           ok: false,
           action:
@@ -6866,24 +7058,157 @@ app.post(
         });
     }
 
-    const cmd =
-      "cd /home/ora/ora-app && npm run build && pm2 restart ora-front --update-env && pm2 restart ora --update-env";
+    if (
+      !fsSync.existsSync(
+        SYSTEM_DEPLOY_RUNNER
+      )
+    ) {
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          action:
+            "deploy",
+          error:
+            "SYSTEM_DEPLOY_RUNNER_MISSING",
+        });
+    }
 
-    exec(
-      `${cmd} > /dev/null 2>&1 &`
+    const deployId =
+      `deploy-${Date.now()}-${crypto
+        .randomBytes(6)
+        .toString("hex")}`;
+
+    const now =
+      new Date()
+        .toISOString();
+
+    const initialState = {
+      deployId,
+      status:
+        "running",
+      stage:
+        "accepted",
+      createdAt:
+        now,
+      startedAt:
+        null,
+      updatedAt:
+        now,
+      completedAt:
+        null,
+
+      proposalId:
+        req.body?.proposalId ||
+        req.body?.id ||
+        null,
+
+      branch:
+        req.body?.branch ||
+        null,
+
+      source:
+        req.body?.source ||
+        "core-system-deploy",
+
+      build: null,
+      restartFront: null,
+      restartCore: null,
+      error: null,
+    };
+
+    writeSystemDeployState(
+      deployId,
+      initialState
     );
 
-    return res.json({
-      ok: true,
-      authority:
-        "KAIROS_EXECUTION_GATE",
-      action:
-        "deploy",
-      message:
-        "Deploy soberano iniciado en background.",
-    });
+    try {
+      const child =
+        spawn(
+          process.execPath,
+          [
+            SYSTEM_DEPLOY_RUNNER,
+            deployId,
+          ],
+          {
+            cwd:
+              PROJECT_ROOT,
+            env: {
+              ...process.env,
+              ORA_DEPLOY_STATE_DIR:
+                SYSTEM_DEPLOY_STATE_DIR,
+            },
+            detached:
+              true,
+            stdio:
+              "ignore",
+          }
+        );
+
+      child.unref();
+
+      if (!child.pid) {
+        throw new Error(
+          "DEPLOY_RUNNER_PID_MISSING"
+        );
+      }
+    } catch (error: any) {
+      writeSystemDeployState(
+        deployId,
+        {
+          ...initialState,
+          status:
+            "failed",
+          stage:
+            "failed",
+          completedAt:
+            new Date()
+              .toISOString(),
+          error:
+            error?.message ||
+            "DEPLOY_RUNNER_START_FAILED",
+        }
+      );
+
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          deployId,
+          action:
+            "deploy",
+          error:
+            error?.message ||
+            "DEPLOY_RUNNER_START_FAILED",
+        });
+    }
+
+    return res
+      .status(202)
+      .json({
+        ok: true,
+        accepted: true,
+        authority:
+          "KAIROS_EXECUTION_GATE",
+        action:
+          "deploy",
+        deployId,
+        status:
+          "running",
+        stage:
+          "accepted",
+        completed:
+          false,
+        finalOutcomeKnown:
+          false,
+        statusEndpoint:
+          `/api/ora/system/deploy/status/${deployId}`,
+        message:
+          "Deploy soberano aceptado. Consulte statusEndpoint para conocer el resultado final.",
+      });
   }
 );
+
 
 
 // ================== START ==================
