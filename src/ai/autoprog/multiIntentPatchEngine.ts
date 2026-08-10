@@ -1,8 +1,5 @@
 import fs from "fs/promises";
 import path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
-
 import {
   authorizeKairosExecution,
 } from "../../security/kairosExecutionGate";
@@ -10,8 +7,6 @@ import {
 import {
   resolveKairosFileTarget,
 } from "../../security/kairosFileTarget";
-
-const execAsync = promisify(exec);
 
 const ROOT = path.resolve(process.cwd());
 
@@ -163,38 +158,85 @@ async function walkSafe(
   return output;
 }
 
-async function runBuild() {
+async function runBuild(
+  req: Request
+) {
   try {
-    const result = await execAsync(
-      "npm run build",
+    /*
+     * KAIROS_MULTI_INTENT_CANONICAL_BUILD_V1
+     *
+     * El motor multi-intent conserva la mutación
+     * selectiva de archivos, pero ya no ejecuta
+     * build mediante un ejecutor local.
+     *
+     * El build aislado pertenece exclusivamente a:
+     *
+     *   /api/kairos/autoprog/build-validate
+     *
+     * El sello recibido se reenvía sin fabricar
+     * autoridad. El endpoint canónico vuelve a
+     * validar modify_runtime.
+     */
+    const seal = String(
+      req.headers.get("x-kairos-seal") ||
+      ""
+    ).trim();
+
+    const response = await fetch(
+      "http://127.0.0.1:3000/api/kairos/autoprog/build-validate",
       {
-        cwd: ROOT,
-        timeout: 1000 * 60 * 8,
-        maxBuffer: 20 * 1024 * 1024,
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+          "x-kairos-seal":
+            seal,
+        },
+        body: JSON.stringify({
+          source:
+            "multi-intent-patch",
+        }),
+        cache:
+          "no-store",
       }
     );
 
+    const text =
+      await response.text();
+
+    let data: any = {};
+
+    try {
+      data = text
+        ? JSON.parse(text)
+        : {};
+    } catch {
+      data = {
+        raw: text,
+      };
+    }
+
     return {
-      ok: true,
-      stdout: String(
-        result.stdout || ""
-      ).slice(-8000),
-      stderr: String(
-        result.stderr || ""
-      ).slice(-8000),
+      ...data,
+      ok:
+        response.ok &&
+        data?.ok !== false &&
+        data?.buildPassed !== false,
+      canonicalBuild:
+        true,
+      canonicalEndpoint:
+        "/api/kairos/autoprog/build-validate",
     };
   } catch (error: any) {
     return {
       ok: false,
       error:
         error?.message ||
-        "MULTI_PATCH_BUILD_FAILED",
-      stdout: String(
-        error?.stdout || ""
-      ).slice(-8000),
-      stderr: String(
-        error?.stderr || ""
-      ).slice(-8000),
+        "MULTI_PATCH_CANONICAL_BUILD_FAILED",
+      canonicalBuild:
+        true,
+      canonicalEndpoint:
+        "/api/kairos/autoprog/build-validate",
     };
   }
 }
@@ -273,7 +315,7 @@ export async function runMultiIntentPatch(
       /*
        * Build es un segundo efecto real.
        * Aunque apply_patch esté autorizado,
-       * ejecutar npm run build requiere
+       * ejecutar el build requiere
        * modify_runtime explícitamente.
        */
       if (buildRequested) {
@@ -477,7 +519,7 @@ export async function runMultiIntentPatch(
       !dryRun &&
       buildRequested
     ) {
-      build = await runBuild();
+      build = await runBuild(req);
     }
 
     const buildPassed =

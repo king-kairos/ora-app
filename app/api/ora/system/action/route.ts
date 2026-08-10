@@ -30,7 +30,8 @@ const HISTORY_FILE = path.join(
 ========================= */
 
 const ACTIONS: Record<string, string> = {
-  build: "npm run build",
+  build:
+    "__KAIROS_CANONICAL_BUILD__",
 
   restart_front: "pm2 restart ora-front",
 
@@ -310,6 +311,97 @@ export async function POST(req: Request) {
           }
         );
       }
+    }
+
+    /*
+     * FRONTERA ÚNICA DE BUILD AISLADO
+     *
+     * SYSTEM ACTION conserva la acción "build"
+     * para compatibilidad con Builder y Control Panel,
+     * pero ya no ejecuta npm directamente.
+     *
+     * Delega al único ejecutor de build aislado:
+     *
+     *   /api/kairos/autoprog/build-validate
+     *
+     * El mismo sello recibido se reenvía y el endpoint
+     * canónico vuelve a validar modify_runtime.
+     */
+    if (action === "build") {
+      const receivedSeal = String(
+        req.headers.get("x-kairos-seal") ||
+        req.headers.get("kairos-seal") ||
+        ""
+      ).trim();
+
+      const buildResponse = await fetch(
+        "http://127.0.0.1:3000/api/kairos/autoprog/build-validate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            "x-kairos-seal":
+              receivedSeal,
+          },
+          body: JSON.stringify({
+            source:
+              "system-action",
+          }),
+          cache:
+            "no-store",
+        }
+      );
+
+      const buildText =
+        await buildResponse.text();
+
+      let buildData: any = {};
+
+      try {
+        buildData =
+          buildText
+            ? JSON.parse(buildText)
+            : {};
+      } catch {
+        buildData = {
+          raw: buildText,
+        };
+      }
+
+      appendHistory({
+        ts: Date.now(),
+        ok:
+          buildResponse.ok &&
+          buildData?.ok !== false,
+        action,
+        command:
+          "CANONICAL:/api/kairos/autoprog/build-validate",
+        delegated:
+          true,
+        canonicalBuild:
+          true,
+        status:
+          buildResponse.status,
+      });
+
+      return NextResponse.json(
+        {
+          ...buildData,
+          delegatedBy:
+            "/api/ora/system/action",
+          requestedAction:
+            "build",
+          canonicalBuild:
+            true,
+          canonicalEndpoint:
+            "/api/kairos/autoprog/build-validate",
+        },
+        {
+          status:
+            buildResponse.status,
+        }
+      );
     }
 
     /*

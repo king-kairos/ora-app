@@ -1,9 +1,9 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { NextResponse } from "next/server";
-import { exec, spawn } from "child_process";
-import { promisify } from "util";
+import {
+  NextResponse,
+} from "next/server";
 
 import {
   readOperation,
@@ -14,38 +14,77 @@ import {
   authorizeKairosExecution,
 } from "@/security/kairosExecutionGate";
 
-const run = promisify(exec);
+const LOCAL_BASE =
+  "http://127.0.0.1:3000";
 
-function scheduleRestart() {
-  const child = spawn(
-    "bash",
-    [
-      "-lc",
-      "sleep 2; pm2 restart ora-front --update-env >/tmp/kairos-orchestrator-restart.log 2>&1",
-    ],
+async function readJson(
+  response: Response
+) {
+  const text =
+    await response.text();
+
+  try {
+    return text
+      ? JSON.parse(text)
+      : {};
+  } catch {
+    return {
+      raw: text,
+    };
+  }
+}
+
+async function postCanonical(
+  pathname: string,
+  seal: string,
+  body: Record<string, unknown>
+) {
+  const response = await fetch(
+    `${LOCAL_BASE}${pathname}`,
     {
-      cwd: process.cwd(),
-      detached: true,
-      stdio: "ignore",
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+        "x-kairos-seal":
+          seal,
+      },
+      body:
+        JSON.stringify(body),
+      cache:
+        "no-store",
     }
   );
 
-  child.unref();
+  return {
+    response,
+    data:
+      await readJson(response),
+  };
 }
 
-export async function POST(req: Request) {
+export async function POST(
+  req: Request
+) {
   let operationId = "";
 
   try {
     /*
-     * FINALIZE produce dos efectos reales distintos:
+     * KAIROS_ORCHESTRATOR_CANONICAL_RUNTIME_V1
      *
-     * 1. npm run build       -> modify_runtime
-     * 2. pm2 restart front   -> restart_front
+     * FINALIZE sigue siendo dueño de la máquina
+     * de estados del Orchestrator.
      *
-     * Ambos deben estar explícitamente autorizados.
-     * Una sola acción no puede conceder autoridad
-     * implícita sobre el otro efecto.
+     * Pero ya NO ejecuta shell directamente.
+     *
+     * BUILD:
+     *   /api/kairos/autoprog/build-validate
+     *
+     * RESTART FRONT:
+     *   /api/ora/system/action
+     *
+     * Las dos capacidades siguen requiriendo
+     * autorización independiente.
      */
 
     const buildAuthorization =
@@ -58,7 +97,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
-          stage: "build_authorization",
+          stage:
+            "build_authorization",
           action:
             buildAuthorization.action,
           error:
@@ -81,7 +121,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
-          stage: "restart_authorization",
+          stage:
+            "restart_authorization",
           action:
             restartAuthorization.action,
           error:
@@ -94,9 +135,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req
-      .json()
-      .catch(() => ({}));
+    const seal = String(
+      req.headers.get(
+        "x-kairos-seal"
+      ) || ""
+    ).trim();
+
+    const body =
+      await req
+        .json()
+        .catch(() => ({}));
 
     operationId = String(
       body?.operationId || ""
@@ -106,7 +154,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "OPERATION_ID_REQUIRED",
+          error:
+            "OPERATION_ID_REQUIRED",
         },
         {
           status: 400,
@@ -115,13 +164,16 @@ export async function POST(req: Request) {
     }
 
     const operation =
-      await readOperation(operationId);
+      await readOperation(
+        operationId
+      );
 
     if (!operation) {
       return NextResponse.json(
         {
           ok: false,
-          error: "OPERATION_NOT_FOUND",
+          error:
+            "OPERATION_NOT_FOUND",
         },
         {
           status: 404,
@@ -157,45 +209,37 @@ export async function POST(req: Request) {
       operationId,
       "building",
       "running",
-      "Ejecutando npm run build."
+      "Delegando build al ejecutor canónico."
     );
 
-    const build = await run(
-      "npm run build",
+    const {
+      response:
+        buildResponse,
+      data:
+        build,
+    } = await postCanonical(
+      "/api/kairos/autoprog/build-validate",
+      seal,
       {
-        cwd: process.cwd(),
-        timeout: 1000 * 60 * 10,
-        maxBuffer: 1024 * 1024 * 25,
+        operationId,
+        proposalId:
+          operation.proposalId,
+        source:
+          "kairos-orchestrator-finalize",
       }
-    ).then(
-      (result) => ({
-        ok: true,
-        stdout: String(
-          result.stdout || ""
-        ).slice(-10000),
-        stderr: String(
-          result.stderr || ""
-        ).slice(-10000),
-      }),
-      (error: any) => ({
-        ok: false,
-        stdout: String(
-          error?.stdout || ""
-        ).slice(-10000),
-        stderr: String(
-          error?.stderr ||
-            error?.message ||
-            ""
-        ).slice(-10000),
-      })
     );
 
-    if (!build.ok) {
+    const buildPassed =
+      buildResponse.ok &&
+      build?.ok !== false &&
+      build?.buildPassed !== false;
+
+    if (!buildPassed) {
       await updateOperation(
         operationId,
         "recovery-pending",
         "failed",
-        "Build falló. Backup preservado; se requiere reparación autorizada."
+        "Build canónico falló. Backup preservado; se requiere reparación autorizada."
       );
 
       return NextResponse.json(
@@ -205,6 +249,10 @@ export async function POST(req: Request) {
             "KAIROS_ORCHESTRATOR_BUILD_FAILED",
           operationId,
           build,
+          canonicalBuild:
+            true,
+          canonicalBuildEndpoint:
+            "/api/kairos/autoprog/build-validate",
           next:
             "AUTO_REPAIR_OR_MANUAL_CORRECTION_REQUIRED",
         },
@@ -218,40 +266,103 @@ export async function POST(req: Request) {
       operationId,
       "build_passed",
       "running",
-      "Build validado correctamente."
+      "Build canónico validado correctamente."
     );
 
     await updateOperation(
       operationId,
       "restart_pending",
       "running",
-      "Reinicio controlado de ora-front programado."
+      "Reinicio controlado de ora-front solicitado al System Action canónico."
     );
 
-    scheduleRestart();
+    const {
+      response:
+        restartResponse,
+      data:
+        restart,
+    } = await postCanonical(
+      "/api/ora/system/action",
+      seal,
+      {
+        action:
+          "restart_front",
+        source:
+          "kairos-orchestrator-finalize",
+        operationId,
+      }
+    );
+
+    const restartScheduled =
+      restartResponse.ok &&
+      restart?.ok !== false &&
+      (
+        restart?.scheduled === true ||
+        restart?.executionAction ===
+          "restart_front"
+      );
+
+    if (!restartScheduled) {
+      await updateOperation(
+        operationId,
+        "recovery-pending",
+        "failed",
+        "Build pasó, pero el reinicio canónico de ora-front no pudo programarse."
+      );
+
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "KAIROS_ORCHESTRATOR_RESTART_FAILED",
+          operationId,
+          build,
+          restart,
+          canonicalRestart:
+            true,
+          canonicalRestartEndpoint:
+            "/api/ora/system/action",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
 
     await updateOperation(
       operationId,
       "restarting",
       "running",
-      "ora-front se reiniciará fuera de esta petición."
+      "ora-front fue programado para reinicio por la frontera canónica."
     );
 
     return NextResponse.json({
       ok: true,
       mode:
-        "KAIROS_ORCHESTRATOR_UPDATE_158_BUILD",
+        "KAIROS_ORCHESTRATOR_CANONICAL_RUNTIME_V1",
       operationId,
       proposalId:
         operation.proposalId,
-      buildPassed: true,
-      restartScheduled: true,
-      verifyAfterSeconds: 8,
+      buildPassed:
+        true,
+      restartScheduled:
+        true,
+      verifyAfterSeconds:
+        8,
       nextEndpoint:
         "/api/kairos/orchestrator/verify",
+      canonicalBuild:
+        true,
+      canonicalBuildEndpoint:
+        "/api/kairos/autoprog/build-validate",
+      canonicalRestart:
+        true,
+      canonicalRestartEndpoint:
+        "/api/ora/system/action",
       build,
+      restart,
       message:
-        "Build aprobado. Reinicio programado; ejecutar verify después de 8 segundos.",
+        "Build aprobado por ejecutor canónico. Reinicio programado por System Action; ejecutar verify después de 8 segundos.",
     });
   } catch (error: any) {
     if (operationId) {
