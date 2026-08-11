@@ -1,160 +1,88 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
 
-const DB_FILE = path.join(process.cwd(), "data", "patches.json");
+function getCoreBase(req: Request) {
+  const envBase =
+    process.env.ORA_API_BASE_URL ||
+    process.env.ORA_INTERNAL_BASE_URL ||
+    process.env.INTERNAL_BASE_URL ||
+    "";
 
-const PATCH_DIRS = [
-  path.join(process.cwd(), "data", "patches"),
-  path.join(process.cwd(), "ora-data", "proposals"),
-  path.join(process.cwd(), "data", "coherencia", "proposals"),
-];
+  if (envBase) {
+    return envBase.replace(/\/+$/, "");
+  }
 
-function cleanId(value: string) {
-  return String(value || "").trim().replace(/\.json$/i, "");
+  const url = new URL(req.url);
+
+  if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+    return "http://127.0.0.1:3001";
+  }
+
+  return "http://127.0.0.1:3001";
 }
 
-async function safeReadJson(file: string) {
+async function readJsonSafe(res: Response) {
+  const text = await res.text();
+
   try {
-    return JSON.parse(await fs.readFile(file, "utf8"));
+    return text ? JSON.parse(text) : {};
   } catch {
-    return null;
+    return { raw: text };
   }
-}
-
-async function safeWriteJson(file: string, data: any) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(data, null, 2), "utf8");
-}
-
-async function archiveInMainDb(id: string) {
-  const db = await safeReadJson(DB_FILE);
-  const items = Array.isArray(db)
-    ? db
-    : Array.isArray(db?.proposals)
-    ? db.proposals
-    : [];
-
-  let changed = false;
-  const now = Date.now();
-
-  const next = items.map((p: any) => {
-    if (cleanId(p?.id) !== id) return p;
-    changed = true;
-    return {
-      ...p,
-      status: "archived",
-      archived: true,
-      updatedAt: now,
-      archivedAt: now,
-    };
-  });
-
-  if (changed) {
-    await safeWriteJson(DB_FILE, { proposals: next });
-  }
-
-  return changed;
-}
-
-async function archiveInProposalFiles(id: string) {
-  let changed = false;
-  const now = Date.now();
-
-  for (const dir of PATCH_DIRS) {
-    try {
-      const files = await fs.readdir(dir);
-
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-
-        const full = path.join(dir, file);
-        const json = await safeReadJson(full);
-        if (!json) continue;
-
-        const jsonId = cleanId(json?.id || file);
-
-        if (jsonId !== id) continue;
-
-        const updated = {
-          ...json,
-          id: json?.id || id,
-          status: "archived",
-          archived: true,
-          updatedAt: now,
-          archivedAt: now,
-        };
-
-        await safeWriteJson(full, updated);
-        changed = true;
-      }
-    } catch {
-      // ignora carpeta inexistente
-    }
-  }
-
-  return changed;
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: rawId } = await context.params;
-    const id = cleanId(rawId);
+    const id = String(rawId || "").trim().replace(/\.json$/i, "");
 
-    const db = await safeReadJson(DB_FILE);
-    const items = Array.isArray(db)
-      ? db
-      : Array.isArray(db?.proposals)
-      ? db.proposals
-      : [];
-
-    const found = items.find((p: any) => cleanId(p?.id) === id);
-
-    if (found) {
-      return NextResponse.json({
-        ok: true,
-        mode: "PROPOSAL_REVIEW_DETAIL",
-        proposal: found,
-      });
+    if (!id) {
+      return NextResponse.json(
+        { ok: false, error: "MISSING_ID" },
+        { status: 400 }
+      );
     }
 
-    for (const dir of PATCH_DIRS) {
-      try {
-        const files = await fs.readdir(dir);
+    const seal = String(
+      req.headers.get("x-kairos-seal") || ""
+    ).trim();
 
-        for (const file of files) {
-          if (!file.endsWith(".json")) continue;
+    const res = await fetch(
+      `${getCoreBase(req)}/api/ora/autoprog/proposal/${encodeURIComponent(id)}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...(seal ? { "x-kairos-seal": seal } : {}),
+        },
+        cache: "no-store",
+      }
+    );
 
-          const full = path.join(dir, file);
-          const json = await safeReadJson(full);
-          if (!json) continue;
-
-          if (cleanId(json?.id || file) === id) {
-            return NextResponse.json({
-              ok: true,
-              mode: "PROPOSAL_REVIEW_DETAIL",
-              proposal: {
-                ...json,
-                id: json?.id || id,
-              },
-            });
-          }
-        }
-      } catch {}
-    }
+    const data = await readJsonSafe(res);
 
     return NextResponse.json(
-      { ok: false, error: "PROPOSAL_NOT_FOUND" },
-      { status: 404 }
+      {
+        ...data,
+        mode:
+          data?.mode ||
+          "PROPOSAL_REVIEW_DETAIL_CANONICAL_ADAPTER",
+      },
+      { status: res.status }
     );
   } catch (error: any) {
     return NextResponse.json(
-      { ok: false, error: error?.message || "PROPOSAL_REVIEW_FAIL" },
+      {
+        ok: false,
+        error:
+          error?.message ||
+          "PROPOSAL_REVIEW_ADAPTER_FAIL",
+      },
       { status: 500 }
     );
   }
@@ -166,40 +94,69 @@ export async function POST(
 ) {
   try {
     const { id: rawId } = await context.params;
-    const id = cleanId(rawId);
+    const id = String(rawId || "").trim().replace(/\.json$/i, "");
+
+    if (!id) {
+      return NextResponse.json(
+        { ok: false, error: "MISSING_ID" },
+        { status: 400 }
+      );
+    }
 
     const body = await req.json().catch(() => ({}));
     const action = String(body?.action || "").trim().toLowerCase();
 
     if (action !== "archive") {
       return NextResponse.json(
-        { ok: false, error: "INVALID_ACTION", allowed: ["archive"] },
+        {
+          ok: false,
+          error: "INVALID_ACTION",
+          allowed: ["archive"],
+        },
         { status: 400 }
       );
     }
 
-    const dbChanged = await archiveInMainDb(id);
-    const fileChanged = await archiveInProposalFiles(id);
+    const seal = String(
+      req.headers.get("x-kairos-seal") || ""
+    ).trim();
 
-    if (!dbChanged && !fileChanged) {
-      return NextResponse.json(
-        { ok: false, error: "PROPOSAL_NOT_FOUND" },
-        { status: 404 }
-      );
-    }
+    const res = await fetch(
+      `${getCoreBase(req)}/api/ora/autoprog/archive/${encodeURIComponent(id)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(seal ? { "x-kairos-seal": seal } : {}),
+        },
+        body: JSON.stringify({}),
+        cache: "no-store",
+      }
+    );
 
-    return NextResponse.json({
-      ok: true,
-      mode: "PROPOSAL_ARCHIVED",
-      id,
-      dbChanged,
-      fileChanged,
-      message: "Proposal archivada correctamente.",
-      createdAt: new Date().toISOString(),
-    });
+    const data = await readJsonSafe(res);
+
+    return NextResponse.json(
+      {
+        ...data,
+        mode:
+          data?.mode ||
+          "PROPOSAL_ARCHIVE_CANONICAL_ADAPTER",
+        proposalId:
+          data?.proposalId ||
+          id,
+      },
+      { status: res.status }
+    );
   } catch (error: any) {
     return NextResponse.json(
-      { ok: false, error: error?.message || "PROPOSAL_ARCHIVE_FAIL" },
+      {
+        ok: false,
+        error:
+          error?.message ||
+          "PROPOSAL_ARCHIVE_ADAPTER_FAIL",
+      },
       { status: 500 }
     );
   }
