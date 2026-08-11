@@ -5909,7 +5909,18 @@ app.post(
   strictLimiter,
   async (req, res) => {
     try {
-      const id = String(req.body?.id || "").trim();
+      /*
+       * KAIROS_PATCH_APPROVE_CANONICAL_ADAPTER_V1
+       *
+       * Endpoint histórico conservado por compatibilidad.
+       * Ya no persiste status="approved" directamente.
+       *
+       * Toda aprobación real pasa por approveProposalById(),
+       * que materializa la aprobación soberana completa.
+       */
+      const id = String(
+        req.body?.id || ""
+      ).trim();
 
       if (!id) {
         return res.status(400).json({
@@ -5918,37 +5929,49 @@ app.post(
         });
       }
 
-      const proposal = await getProposalStore(id);
+      const seal = String(
+        req.header("x-kairos-seal") || ""
+      );
 
-      if (!proposal) {
-        return res.status(404).json({
+      if (!seal) {
+        return res.status(403).json({
           ok: false,
-          error: "PROPOSAL_NOT_FOUND",
+          error: "SEAL_REQUIRED",
         });
       }
 
-      const updated = await setStatusStore(id, "approved");
-
-      await coherenceAppend({
-        type: "patch-approve",
-        proposalId: id,
-        title: updated?.title || proposal.title || null,
-      });
+      const approved =
+        await approveProposalById(
+          id,
+          seal
+        );
 
       return res.json({
         ok: true,
         id,
-        proposal: updated,
+        proposal: approved,
+        compatibilityAdapter: true,
+        canonicalApproval:
+          "approveProposalById",
       });
     } catch (e: any) {
-      return res.status(500).json({
+      const message =
+        e?.message ||
+        "PATCH_APPROVE_FAIL";
+
+      const status =
+        message === "NOT_FOUND"
+          ? 404
+          : 400;
+
+      return res.status(status).json({
         ok: false,
-        error: e.message || "PATCH_APPROVE_FAIL",
+        error: message,
       });
     }
   }
 );
-      
+
 app.post(
   "/api/ora/autoprog/patch/apply",
   requireKairosSeal,
