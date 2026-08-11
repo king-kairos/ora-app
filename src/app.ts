@@ -2481,9 +2481,40 @@ async function denyProposal(id: string) {
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
 
-  await setStatusStore(id, "denied").catch(() => {});
+  /*
+   * KAIROS_DENY_CANONICAL_TRANSITION_V1
+   *
+   * DENY solamente es válido desde:
+   * pending, approved o denied (idempotente).
+   *
+   * Nunca se ignora un fallo del store canónico.
+   * El archivo suelto se sincroniza únicamente
+   * después de validar y persistir la transición.
+   */
+  const currentStatus = String(p.status || "").trim().toLowerCase();
+
+  if (
+    currentStatus !== "pending" &&
+    currentStatus !== "approved" &&
+    currentStatus !== "denied"
+  ) {
+    throw new Error(
+      `INVALID_STATUS_TRANSITION:${currentStatus}->denied`
+    );
+  }
+
+  const updatedStore =
+    await setStatusStore(id, "denied");
+
+  if (!updatedStore) {
+    throw new Error("DENY_STORE_UPDATE_FAILED");
+  }
+
   await setFileProposalStatus(id, "denied");
-  await coherenceAppend({ type: "proposal-denied", proposalId: id });
+  await coherenceAppend({
+    type: "proposal-denied",
+    proposalId: id,
+  });
 
   return true;
 }
