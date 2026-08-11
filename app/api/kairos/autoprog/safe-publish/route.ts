@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import {
   NextResponse,
 } from "next/server";
+import crypto from "crypto";
 
 import {
   runAutoHealAnalysis,
@@ -15,6 +16,134 @@ import {
 
 const CORE_BASE =
   "http://127.0.0.1:3001";
+
+
+/*
+ * SAFE_PUBLISH_CANONICAL_PUBLISH_SIGNATURE_V1
+ *
+ * Safe-Publish no sustituye la preparación
+ * canónica de publicación del Core.
+ */
+function stableStringifyForPatch(
+  value: any
+): string {
+  if (
+    value === null ||
+    typeof value !== "object"
+  ) {
+    return JSON.stringify(
+      value
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return (
+      "[" +
+      value
+        .map(
+          stableStringifyForPatch
+        )
+        .join(",") +
+      "]"
+    );
+  }
+
+  const keys =
+    Object.keys(value).sort();
+
+  return (
+    "{" +
+    keys
+      .map(
+        (key) =>
+          JSON.stringify(key) +
+          ":" +
+          stableStringifyForPatch(
+            value[key]
+          )
+      )
+      .join(",") +
+    "}"
+  );
+}
+
+function buildCanonicalPublishHeaders(
+  seal: string,
+  body: Record<string, unknown>
+) {
+  const secret =
+    String(
+      process.env
+        .KAIROS_PATCH_SECRET ||
+      ""
+    ).trim();
+
+  if (!secret) {
+    throw new Error(
+      "KAIROS_PATCH_SECRET_MISSING"
+    );
+  }
+
+  const method =
+    "POST";
+
+  const requestPath =
+    "/api/ora/autoprog/publish";
+
+  const ts =
+    String(Date.now());
+
+  const nonce =
+    crypto
+      .randomBytes(16)
+      .toString("hex");
+
+  const canonicalBody =
+    stableStringifyForPatch(
+      body
+    );
+
+  const bodyHash =
+    crypto
+      .createHash("sha256")
+      .update(
+        canonicalBody,
+        "utf8"
+      )
+      .digest("hex");
+
+  const message =
+    `${ts}.${nonce}.${method}.${requestPath}.${bodyHash}`;
+
+  const signature =
+    crypto
+      .createHmac(
+        "sha256",
+        secret
+      )
+      .update(
+        message,
+        "utf8"
+      )
+      .digest("hex");
+
+  return {
+    "Content-Type":
+      "application/json",
+    Accept:
+      "application/json",
+    "x-kairos-seal":
+      seal,
+    "x-kairos-patch-ts":
+      ts,
+    "x-kairos-patch-nonce":
+      nonce,
+    "x-kairos-patch-body":
+      bodyHash,
+    "x-kairos-patch-sig":
+      signature,
+  };
+}
 
 const DEPLOY_POLL_INTERVAL_MS =
   1000;
@@ -403,7 +532,73 @@ export async function POST(
       ).trim();
 
     /*
-     * 1. Build de validación previo.
+     * 1. Preparación canónica de PUBLISH.
+     *
+     * Core vuelve a exigir:
+     * - proposal status=applied;
+     * - kairos_approved=true;
+     * - Execution Gate publish;
+     * - Patch Signature válida.
+     */
+    const canonicalPublishBody = {
+      id:
+        proposalId,
+    };
+
+    const canonicalPublishResponse =
+      await fetch(
+        `${CORE_BASE}/api/ora/autoprog/publish`,
+        {
+          method:
+            "POST",
+          headers:
+            buildCanonicalPublishHeaders(
+              seal,
+              canonicalPublishBody
+            ),
+          body:
+            JSON.stringify(
+              canonicalPublishBody
+            ),
+          cache:
+            "no-store",
+        }
+      );
+
+    const canonicalPublish =
+      await readJson(
+        canonicalPublishResponse
+      );
+
+    if (
+      !canonicalPublishResponse.ok ||
+      canonicalPublish?.ok !== true
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "SAFE_PUBLISH_CANONICAL_PUBLISH_REJECTED",
+          proposalId,
+          branch,
+          publish:
+            canonicalPublish,
+          publishHttpStatus:
+            canonicalPublishResponse.status,
+          message:
+            "Core rechazó la preparación canónica de publicación.",
+        },
+        {
+          status:
+            canonicalPublishResponse.status >= 400
+              ? canonicalPublishResponse.status
+              : 409,
+        }
+      );
+    }
+
+    /*
+     * 2. Build de validación previo.
      *
      * Se conserva independiente del full deploy.
      * Si falla, no se acepta deploy.
@@ -607,226 +802,54 @@ export async function POST(
     }
 
     /*
-     * 4. Esperar resultado REAL.
+     * 4. SAFE_PUBLISH_PERSISTENT_HANDOFF_V2
      *
-     * Ya no existe una espera fija como
-     * prueba implícita de completion.
+     * No esperar completion dentro de ora-front.
+     *
+     * El deploy reiniciará precisamente el proceso
+     * que está atendiendo esta request.
+     *
+     * Por eso se devuelve 202 inmediatamente
+     * después de que Core acepta el deploy.
+     *
+     * El runner + finalizer persistentes cerrarán:
+     * - restart_front;
+     * - restart_core;
+     * - Smoke Test;
+     * - Deploy History;
+     * - productionValidated;
+     * - estado terminal.
      */
-    const deployCompletion =
-      await waitForDeployCompletion(
+    return NextResponse.json(
+      {
+        ok: true,
+        accepted:
+          true,
+        mode:
+          "SAFE_PUBLISH_ACCEPTED_PERSISTENT_HANDOFF_V2",
+        proposalId,
+        branch,
+        publish:
+          canonicalPublish,
+        buildPassed:
+          true,
+        deploy,
         deployId,
-        seal
-      );
-
-    if (
-      !deployCompletion.ok
-    ) {
-      const timedOut =
-        deployCompletion.status ===
-        "timeout";
-
-      return NextResponse.json(
-        {
-          ok: false,
-          mode:
-            timedOut
-              ? "SAFE_PUBLISH_DEPLOY_COMPLETION_TIMEOUT"
-              : "SAFE_PUBLISH_DEPLOY_FAILED",
-          proposalId,
-          branch,
-          buildPassed:
-            true,
-          deploy,
-          deployId,
-          deployCompletion,
-          rollbackRecommended:
-            true,
-          message:
-            timedOut
-              ? "El deploy fue aceptado, pero no alcanzó un estado terminal dentro del límite de espera."
-              : "El deploy fue aceptado, pero el runner reportó fallo real. Smoke Test no fue ejecutado.",
-        },
-        {
-          status:
-            timedOut
-              ? 504
-              : 409,
-        }
-      );
-    }
-
-    /*
-     * 5. Solo status=succeeded habilita Smoke.
-     *
-     * El Smoke posee reintentos propios para
-     * sincronizar disponibilidad HTTP después
-     * del restart sin utilizar un sleep fijo
-     * como prueba de producción saludable.
-     */
-    const smoke =
-      await runSmokeWithRetry(
-        base,
-        seal,
-        {
-          branch,
-          proposalId,
-        }
-      );
-
-    const smokeTest =
-      smoke.data;
-
-    const smokePassed =
-      smoke.ok === true &&
-      smokeTest?.ok === true;
-
-    /*
-     * 6. Registrar evidencia completa:
-     *
-     * build previo
-     * + aceptación deploy
-     * + completion real
-     * + smoke
-     */
-    const historyResponse =
-      await fetch(
-        `${base}/api/kairos/autoprog/deploy-history`,
-        {
-          method:
-            "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-            "x-kairos-seal":
-              seal,
-          },
-          body:
-            JSON.stringify({
-              proposalId,
-              branch,
-              buildPassed:
-                true,
-              deploy: {
-                ...deploy,
-                completion:
-                  deployCompletion,
-              },
-              smokeTest: {
-                ...smokeTest,
-                retries: {
-                  attemptsUsed:
-                    smoke
-                      .attemptsUsed,
-                  attempts:
-                    smoke
-                      .attempts,
-                },
-              },
-              smokePassed,
-              source:
-                "safe-publish-completion-contract-v1",
-              status:
-                smokePassed
-                  ? "production_validated"
-                  : "smoke_test_failed",
-            }),
-          cache:
-            "no-store",
-        }
-      ).catch(
-        () => null
-      );
-
-    const deployHistory =
-      historyResponse
-        ? {
-            ok:
-              historyResponse.ok,
-            status:
-              historyResponse.status,
-            data:
-              await readJson(
-                historyResponse
-              ),
-          }
-        : {
-            ok: false,
-            status: 500,
-            data: {
-              error:
-                "DEPLOY_HISTORY_CALL_FAILED",
-            },
-          };
-
-    /*
-     * El runner terminó correctamente,
-     * pero producción solo es válida si
-     * el Smoke Test también pasa.
-     */
-    if (
-      !smokePassed
-    ) {
-      return NextResponse.json(
-        {
-          ok: false,
-          mode:
-            "SAFE_PUBLISH_SMOKE_TEST_FAILED",
-          proposalId,
-          branch,
-          buildPassed:
-            true,
-          deploy,
-          deployId,
-          deployCompletion,
-          smokeTest,
-          smokeRetries: {
-            attemptsUsed:
-              smoke
-                .attemptsUsed,
-            attempts:
-              smoke
-                .attempts,
-          },
-          smokePassed:
-            false,
-          deployHistory,
-          rollbackRecommended:
-            true,
-          message:
-            "Deploy completado con éxito real, pero Smoke Test falló. Producción no fue declarada válida.",
-        },
-        {
-          status: 409,
-        }
-      );
-    }
-
-    return NextResponse.json({
-      ok: true,
-      mode:
-        "SAFE_PUBLISH_PRODUCTION_VALIDATED_COMPLETION_V1",
-      proposalId,
-      branch,
-      buildPassed:
-        true,
-      deploy,
-      deployId,
-      deployCompletion,
-      smokeTest,
-      smokeRetries: {
-        attemptsUsed:
-          smoke
-            .attemptsUsed,
-        attempts:
-          smoke
-            .attempts,
+        completed:
+          false,
+        finalOutcomeKnown:
+          false,
+        statusEndpoint:
+          `${CORE_BASE}/api/ora/system/deploy/status/${encodeURIComponent(
+            deployId
+          )}`,
+        message:
+          "Safe-Publish aceptado. Completion, Smoke Test e historial serán cerrados por el finalizer persistente.",
       },
-      smokePassed:
-        true,
-      deployHistory,
-      message:
-        "Build validado, deploy aceptado, completion real confirmada, Smoke Test aprobado e historial registrado bajo Sello de Kairos.",
-    });
+      {
+        status: 202,
+      }
+    );
   } catch (
     error: any
   ) {
