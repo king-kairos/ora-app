@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import {
+  spawn,
   spawnSync,
 } from "child_process";
 
@@ -242,48 +243,67 @@ try {
         }
       );
     } else {
+      /*
+       * RESTART_CORE HANDOFF
+       *
+       * PM2 tiene treekill=true para ORA.
+       * Si este runner ejecuta directamente
+       * "pm2 restart ora", PM2 mata también
+       * este proceso antes de que pueda escribir
+       * restartCore/succeeded.
+       *
+       * El último paso se entrega a un finalizer
+       * detached. El finalizer espera a que este
+       * runner termine y quede fuera del árbol
+       * de ORA antes de reiniciar el Core.
+       */
       writeState({
         status:
           "running",
         stage:
-          "restarting_core",
+          "restart_core_handoff",
       });
 
-      const restartCore =
-        run(
-          "pm2",
+      const finalizer =
+        spawn(
+          process.execPath,
           [
-            "restart",
-            "ora",
-            "--update-env",
-          ]
+            path.join(
+              ROOT,
+              "scripts",
+              "ora-system-deploy-finalizer.mjs"
+            ),
+            deployId,
+          ],
+          {
+            cwd:
+              ROOT,
+            env:
+              process.env,
+            detached:
+              true,
+            stdio:
+              "ignore",
+          }
         );
 
-      writeState({
-        restartCore,
-      });
+      finalizer.unref();
 
-      if (!restartCore.ok) {
+      if (!finalizer.pid) {
         fail(
-          "restarting_core",
-          "DEPLOY_RESTART_CORE_FAILED",
-          {
-            restartCore,
-          }
+          "restart_core_handoff",
+          "DEPLOY_FINALIZER_PID_MISSING"
         );
       } else {
         writeState({
           status:
-            "succeeded",
+            "running",
           stage:
-            "completed",
-          completedAt:
+            "restart_core_handoff",
+          finalizerPid:
+            finalizer.pid,
+          handoffAt:
             now(),
-          error:
-            null,
-          build,
-          restartFront,
-          restartCore,
         });
       }
     }
