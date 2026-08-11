@@ -1,139 +1,201 @@
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
 
-const DB_FILE = path.join(process.cwd(), "data", "patches.json");
+function getCoreBase() {
+  const envBase =
+    process.env.ORA_API_BASE_URL ||
+    process.env.ORA_INTERNAL_BASE_URL ||
+    process.env.INTERNAL_BASE_URL ||
+    "";
 
-const PATCH_DIRS = [
-  path.join(process.cwd(), "data", "patches"),
-  path.join(process.cwd(), "ora-data", "proposals"),
-  path.join(process.cwd(), "data", "coherencia", "proposals"),
-];
-
-const ARCHIVABLE = new Set([
-  "pending",
-  "approved",
-  "applied",
-  "published",
-  "rejected",
-  "denied",
-  "error",
-  "failed",
-  "fail",
-  "manual",
-  "unknown",
-]);
-
-function cleanStatus(value: any) {
-  return String(value || "pending").trim().toLowerCase();
+  return envBase
+    ? envBase.replace(/\/+$/, "")
+    : "http://127.0.0.1:3001";
 }
 
-async function safeReadJson(file: string) {
+async function readJsonSafe(res: Response) {
+  const text = await res.text();
+
   try {
-    return JSON.parse(await fs.readFile(file, "utf8"));
+    return text ? JSON.parse(text) : {};
   } catch {
-    return null;
+    return { raw: text };
   }
 }
 
-async function safeWriteJson(file: string, data: any) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(data, null, 2), "utf8");
-}
-
-function archiveItem(item: any, now: number) {
-  return {
-    ...item,
-    status: "archived",
-    archived: true,
-    updatedAt: now,
-    archivedAt: now,
-  };
-}
-
-function isVisibleArchivable(item: any) {
-  const status = cleanStatus(item?.status);
-  const archived = item?.archived === true || status === "archived";
-
-  if (archived) return false;
-
-  return ARCHIVABLE.has(status);
-}
-
-async function archiveMainDb(now: number) {
-  const db = await safeReadJson(DB_FILE);
-  const items = Array.isArray(db)
-    ? db
-    : Array.isArray(db?.proposals)
-    ? db.proposals
-    : [];
-
-  let count = 0;
-
-  const next = items.map((p: any) => {
-    if (!isVisibleArchivable(p)) return p;
-
-    count++;
-    return archiveItem(p, now);
-  });
-
-  if (count > 0) {
-    await safeWriteJson(DB_FILE, { proposals: next });
-  }
-
-  return count;
-}
-
-async function archiveProposalFiles(now: number) {
-  let count = 0;
-
-  for (const dir of PATCH_DIRS) {
-    try {
-      const files = await fs.readdir(dir);
-
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-
-        const full = path.join(dir, file);
-        const json = await safeReadJson(full);
-        if (!json) continue;
-
-        if (!isVisibleArchivable(json)) continue;
-
-        await safeWriteJson(full, archiveItem(json, now));
-        count++;
-      }
-    } catch {
-      // carpeta inexistente
-    }
-  }
-
-  return count;
-}
-
-export async function POST() {
+export async function POST(req: Request) {
   try {
-    const now = Date.now();
+    const seal = String(
+      req.headers.get("x-kairos-seal") || ""
+    ).trim();
 
-    const dbArchived = await archiveMainDb(now);
-    const fileArchived = await archiveProposalFiles(now);
+    if (!seal) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "KAIROS_SEAL_REQUIRED",
+        },
+        { status: 403 }
+      );
+    }
 
-    return NextResponse.json({
-      ok: true,
-      mode: "ARCHIVE_VISIBLE_PROPOSALS",
-      dbArchived,
-      fileArchived,
-      totalArchived: dbArchived + fileArchived,
-      message: "Propuestas visibles archivadas correctamente.",
-      createdAt: new Date().toISOString(),
+    /*
+     * La lista visible sigue viniendo del agregador usado
+     * por KairosBuilderPanel.
+     *
+     * Esta ruta NO modifica ningún store directamente.
+     */
+    const origin = new URL(req.url).origin;
+
+    const listRes = await fetch(
+      `${origin}/api/ora/patches/list`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "x-kairos-seal": seal,
+        },
+        cache: "no-store",
+      }
+    );
+
+    const listData = await readJsonSafe(listRes);
+
+    if (!listRes.ok || listData?.ok === false) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            listData?.error ||
+            "VISIBLE_PROPOSAL_LIST_FAILED",
+        },
+        { status: listRes.status || 500 }
+      );
+    }
+
+    const items =
+      Array.isArray(listData?.items)
+        ? listData.items
+        : Array.isArray(listData?.patches)
+        ? listData.patches
+        : Array.isArray(listData?.data)
+        ? listData.data
+        : Array.isArray(listData)
+        ? listData
+        : [];
+
+    const visible = items.filter((p: any) => {
+      const status = String(
+        p?.status || "unknown"
+      )
+        .trim()
+        .toLowerCase();
+
+      return (
+        status !== "archived" &&
+        p?.archived !== true
+      );
     });
+
+    const ids: string[] = Array.from(
+      new Set<string>(
+        visible
+          .map((p: any) =>
+            String(p?.id || "").trim()
+          )
+          .filter((id: string) => id.length > 0)
+      )
+    );
+
+    const results: any[] = [];
+
+    /*
+     * Cada transición pasa individualmente por el Core.
+     * El Core vuelve a exigir Sello Kairos y valida
+     * la transición de estado canónica.
+     */
+    for (const id of ids) {
+      const res = await fetch(
+        `${getCoreBase()}/api/ora/autoprog/archive/${encodeURIComponent(id)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json",
+            "x-kairos-seal":
+              seal,
+          },
+          body:
+            JSON.stringify({}),
+          cache:
+            "no-store",
+        }
+      );
+
+      const data =
+        await readJsonSafe(res);
+
+      results.push({
+        id,
+        ok:
+          res.ok &&
+          data?.ok !== false,
+        status:
+          res.status,
+        error:
+          res.ok
+            ? null
+            : data?.error ||
+              `HTTP_${res.status}`,
+      });
+    }
+
+    const archived =
+      results.filter(
+        (x) => x.ok
+      ).length;
+
+    const failed =
+      results.filter(
+        (x) => !x.ok
+      );
+
+    return NextResponse.json(
+      {
+        ok:
+          failed.length === 0,
+        mode:
+          "ARCHIVE_VISIBLE_CANONICAL_ORCHESTRATOR_V1",
+        requested:
+          ids.length,
+        totalArchived:
+          archived,
+        failedCount:
+          failed.length,
+        failed,
+        directStoreMutation:
+          false,
+        canonicalEndpoint:
+          "/api/ora/autoprog/archive/:id",
+      },
+      {
+        status:
+          failed.length === 0
+            ? 200
+            : 207,
+      }
+    );
   } catch (error: any) {
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "ARCHIVE_VISIBLE_FAIL",
+        error:
+          error?.message ||
+          "ARCHIVE_VISIBLE_CANONICAL_FAIL",
       },
       { status: 500 }
     );
