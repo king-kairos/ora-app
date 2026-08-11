@@ -2452,8 +2452,29 @@ async function applyProposalById(
     parentVersion: p.version,
   };
 
-  await setStatusStore(id, "applied").catch(() => {});
-  await writeJsonFile(path.join(ORA_PROPOSALS_DIR, `${id}.json`), updatedProposal);
+  /*
+   * KAIROS_APPLY_PERSISTENCE_FAIL_CLOSED_V1
+   *
+   * PatchEngine ya completó la mutación de archivos.
+   * Desde este punto ningún fallo de persistencia de estado
+   * puede ser ocultado ni convertirse en un falso éxito.
+   */
+  const updatedStore =
+    await setStatusStore(id, "applied");
+
+  if (!updatedStore) {
+    throw new Error(
+      "APPLY_STATUS_STORE_UPDATE_FAILED"
+    );
+  }
+
+  await writeJsonFile(
+    path.join(
+      ORA_PROPOSALS_DIR,
+      `${id}.json`
+    ),
+    updatedProposal
+  );
 
   for (const result of results) {
     await appendHistory({
