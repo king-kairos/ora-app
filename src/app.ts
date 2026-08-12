@@ -2360,8 +2360,63 @@ async function listProposalObjects(): Promise<Proposal[]> {
   );
 }
 
+/*
+ * KAIROS_PROPOSAL_MUTATION_LOCK_V1
+ *
+ * Serializa mutaciones de lifecycle por proposalId.
+ * Propuestas diferentes pueden continuar en paralelo.
+ */
+const proposalMutationTails =
+  new Map<string, Promise<void>>();
+
+async function withProposalMutationLock<T>(
+  id: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const key = String(id || "").trim();
+
+  if (!key) {
+    throw new Error("PROPOSAL_LOCK_ID_REQUIRED");
+  }
+
+  const previous =
+    proposalMutationTails.get(key) ||
+    Promise.resolve();
+
+  let release!: () => void;
+
+  const current =
+    new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+  const tail =
+    previous
+      .catch(() => {})
+      .then(() => current);
+
+  proposalMutationTails.set(
+    key,
+    tail
+  );
+
+  await previous.catch(() => {});
+
+  try {
+    return await operation();
+  } finally {
+    release();
+
+    if (
+      proposalMutationTails.get(key) === tail
+    ) {
+      proposalMutationTails.delete(key);
+    }
+  }
+}
+
 // ================== PROPOSAL OPERATIONS ==================
-async function applyProposalById(
+async function applyProposalByIdUnlocked(
   id: string,
   req: any
 ) {
@@ -2498,7 +2553,7 @@ async function applyProposalById(
   };
 }
 
-async function denyProposal(id: string) {
+async function denyProposalUnlocked(id: string) {
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
 
@@ -2540,7 +2595,7 @@ async function denyProposal(id: string) {
   return true;
 }
 
-async function archiveProposalById(id: string) {
+async function archiveProposalByIdUnlocked(id: string) {
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
 
@@ -2566,7 +2621,7 @@ async function archiveProposalById(id: string) {
   return updatedFile || updatedStore;
 }
 
-async function approveProposalById(id: string, seal: string) {
+async function approveProposalByIdUnlocked(id: string, seal: string) {
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
   if (p.status !== "pending") throw new Error("PROPOSAL_NOT_PENDING");
@@ -2642,6 +2697,46 @@ function mergeHomepageControlContent(current: any, incoming: any) {
  * Efectos reales de build/restart pertenecen únicamente
  * a la acción "deploy".
  */
+/*
+ * KAIROS_PROPOSAL_LIFECYCLE_LOCKED_AUTHORITY_V1
+ *
+ * Toda mutación individual de lifecycle adquiere
+ * exclusión por proposalId.
+ *
+ * Las implementaciones *Unlocked solamente pueden
+ * utilizarse cuando el caller ya posee ese mismo lock.
+ */
+async function applyProposalById(id: string, req: any) {
+  return withProposalMutationLock(
+    id,
+    () => applyProposalByIdUnlocked(id, req)
+  );
+}
+
+async function denyProposal(id: string) {
+  return withProposalMutationLock(
+    id,
+    () => denyProposalUnlocked(id)
+  );
+}
+
+async function archiveProposalById(id: string) {
+  return withProposalMutationLock(
+    id,
+    () => archiveProposalByIdUnlocked(id)
+  );
+}
+
+async function approveProposalById(
+  id: string,
+  seal: string
+) {
+  return withProposalMutationLock(
+    id,
+    () => approveProposalByIdUnlocked(id, seal)
+  );
+}
+
 async function publishProposalById(id: string, req: any) {
   const proposal = await resolveCanonicalProposal(id);
 
@@ -4924,11 +5019,37 @@ app.post(
         return res.status(403).json({ ok: false, error: "SEAL_REQUIRED" });
       }
 
-      // 🔥 1. APPROVE
-      const approved = await approveProposalById(id, seal);
+        /*
+         * KAIROS_APPROVE_APPLY_SINGLE_LOCK_V1
+         *
+         * pending -> approved -> applied ocurre bajo
+         * una sola exclusión por proposalId.
+         *
+         * DENY y ARCHIVE no pueden intercalarse
+         * entre APPROVE y APPLY.
+         */
+        const { approved, applied } =
+          await withProposalMutationLock(
+            id,
+            async () => {
+              const approved =
+                await approveProposalByIdUnlocked(
+                  id,
+                  seal
+                );
 
-      // 🔥 2. APPLY
-      const applied = await applyProposalById(id, req);
+              const applied =
+                await applyProposalByIdUnlocked(
+                  id,
+                  req
+                );
+
+              return {
+                approved,
+                applied,
+              };
+            }
+          );
 
       await coherenceAppend({
         type: "approve-and-apply",
