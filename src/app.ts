@@ -2540,6 +2540,32 @@ async function denyProposal(id: string) {
   return true;
 }
 
+async function archiveProposalById(id: string) {
+  const p = await resolveCanonicalProposal(id);
+  if (!p) throw new Error("NOT_FOUND");
+
+  /* KAIROS_ARCHIVE_CANONICAL_AUTHORITY_V1 */
+  const fileBefore = await getFileProposalById(id);
+
+  const updatedStore = await archiveProposalStore(id);
+
+  if (!updatedStore) {
+    throw new Error("ARCHIVE_STORE_UPDATE_FAILED");
+  }
+
+  let updatedFile = null;
+
+  if (fileBefore) {
+    updatedFile = await setFileProposalStatus(id, "archived");
+
+    if (!updatedFile) {
+      throw new Error("ARCHIVE_FILE_UPDATE_FAILED");
+    }
+  }
+
+  return updatedFile || updatedStore;
+}
+
 async function approveProposalById(id: string, seal: string) {
   const p = await resolveCanonicalProposal(id);
   if (!p) throw new Error("NOT_FOUND");
@@ -5017,13 +5043,13 @@ app.post("/api/ora/autoprog/archive/:id", requireKairosSeal, criticalLimiter, as
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
 
-    const updatedStore = await archiveProposalStore(id).catch(() => null);
-    const updatedFile = await setFileProposalStatus(id, "archived").catch(() => null);
+      const archived = await archiveProposalById(id);
 
-    res.json({
-      ok: !!(updatedStore || updatedFile),
-      archived: updatedStore || updatedFile || null,
-    });
+      res.json({
+        ok: true,
+        archived,
+        canonicalArchive: true,
+      });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message || "ARCHIVE_FAIL" });
   }
@@ -5365,10 +5391,14 @@ app.post("/api/autoprog/archive", requireKairosSeal, criticalLimiter, async (req
     const id = String(req.body?.id || "").trim();
     if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
 
-    const updatedStore = await archiveProposalStore(id).catch(() => null);
-    const updatedFile = await setFileProposalStatus(id, "archived").catch(() => null);
+      const archived = await archiveProposalById(id);
 
-    res.json({ ok: !!(updatedStore || updatedFile), archived: updatedStore || updatedFile || null });
+      res.json({
+        ok: true,
+        archived,
+        compatibilityAdapter: true,
+        canonicalArchive: true,
+      });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message || "ARCHIVE_FAIL" });
   }
