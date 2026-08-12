@@ -76,7 +76,7 @@ export type Proposal = {
 
 export type ApplyResultItem = {
   path: string;
-  action: "written" | "deleted" | "modified";
+  action: "written" | "deleted" | "modified" | "noted";
   ok: boolean;
   bytes?: number;
   note?: string;
@@ -496,7 +496,24 @@ function detectTouchedZones(paths: string[]): string[] {
 }
 
 function buildExecutionPlan(results: ApplyResultItem[]): ApplyPlan {
-  const touchedPaths = results.map((r) => r.path);
+  /*
+   * KAIROS_MUTATING_PLAN_ONLY_V1
+   *
+   * El plan operacional solo deriva de operaciones que
+   * realmente mutaron filesystem.
+   *
+   * NOTE/noted es declarativa: no dispara build,
+   * restart, touchedZones ni comandos recomendados.
+   */
+  const touchedPaths = results
+    .filter(
+      (r) =>
+        r.action === "written" ||
+        r.action === "modified" ||
+        r.action === "deleted"
+    )
+    .map((r) => r.path);
+
   const touchedZones = detectTouchedZones(touchedPaths);
 
   const requiresBuild = touchedPaths.some(
@@ -611,6 +628,26 @@ export async function applyPatch(
   for (const rawFile of filesToApply) {
     const f = rawFile as PatchFile;
     const rel = normalizeRel(f?.path || "");
+    const mode = String(f?.mode || "").trim().toLowerCase();
+
+    /*
+     * KAIROS_NOTE_NO_FS_V1
+     *
+     * NOTE es una operación declarativa y no toca filesystem.
+     * Debe resolverse antes de la política de targets FS.
+     *
+     * normalizeRel permanece activo para exigir una identidad
+     * de path relativa y estructuralmente válida.
+     */
+    if (mode === "note") {
+      results.push({
+        path: rel,
+        action: "noted",
+        ok: true,
+        note: "note_mode_no_write",
+      });
+      continue;
+    }
 
     if (!isAllowed(rel)) {
       throw new Error(`path_not_allowed:${rel}`);
@@ -619,7 +656,6 @@ export async function applyPatch(
     const abs = path.join(ROOT, rel);
     await assertSafeFsTarget(abs);
 
-    const mode = String(f?.mode || "").trim().toLowerCase();
     const content = String(f?.content ?? "");
 
     if (wantsDeleteFile(f)) {
@@ -648,16 +684,6 @@ export async function applyPatch(
           throw e;
         }
       }
-      continue;
-    }
-
-    if (mode === "note") {
-      results.push({
-        path: rel,
-        action: "written",
-        ok: true,
-        note: "note_mode_no_write",
-      });
       continue;
     }
 

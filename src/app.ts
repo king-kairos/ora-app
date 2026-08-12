@@ -2497,7 +2497,25 @@ async function applyProposalByIdUnlocked(
   const written = results.filter((x: any) => x?.action === "written").length;
   const modified = results.filter((x: any) => x?.action === "modified").length;
   const deleted = results.filter((x: any) => x?.action === "deleted").length;
-  const filePaths = results.map((x: any) => x?.path).filter(Boolean);
+
+  /*
+   * KAIROS_APPLY_MUTATED_FILEPATHS_ONLY_V1
+   *
+   * filePaths representa exclusivamente targets que produjeron
+   * mutación real de filesystem.
+   *
+   * NOTE/noted permanece visible en results + history,
+   * pero no puede anunciarse como archivo escrito/modificado.
+   */
+  const filePaths = results
+    .filter(
+      (x: any) =>
+        x?.action === "written" ||
+        x?.action === "modified" ||
+        x?.action === "deleted"
+    )
+    .map((x: any) => x?.path)
+    .filter(Boolean);
 
   const newVersion = (p.version || 1) + 1;
   const updatedProposal: Proposal = {
