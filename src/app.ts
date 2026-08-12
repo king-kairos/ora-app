@@ -2562,8 +2562,21 @@ async function approveProposalById(id: string, seal: string) {
     integrity_hash: integrity,
   };
 
-  await setStatusStore(id, "approved").catch(() => {});
-  await writeJsonFile(path.join(ORA_PROPOSALS_DIR, `${id}.json`), updated);
+  /*
+   * KAIROS_APPROVE_PERSISTENCE_FAIL_CLOSED_V1
+   * Ningún fallo del store canónico puede ser ocultado.
+   */
+  const updatedStore =
+    await setStatusStore(id, "approved");
+
+  if (!updatedStore) {
+    throw new Error("APPROVE_STATUS_STORE_UPDATE_FAILED");
+  }
+
+  await writeJsonFile(
+    path.join(ORA_PROPOSALS_DIR, `${id}.json`),
+    updated
+  );
   await coherenceAppend({ type: "proposal-approved", proposalId: id });
 
   return updated;
