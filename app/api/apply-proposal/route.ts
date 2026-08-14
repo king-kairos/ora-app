@@ -5,6 +5,10 @@ import {
   NextResponse,
 } from "next/server";
 
+import {
+  buildKairosPatchHeaders,
+} from "../../../src/security/kairosPatchSigner";
+
 /**
  * APPLY_PROPOSAL_CANONICAL_ADAPTER_V1
  *
@@ -136,14 +140,13 @@ export async function POST(
         )}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-            Accept:
-              "application/json",
-            "x-kairos-seal":
+          headers:
+            buildKairosPatchHeaders({
               seal,
-          },
+              method: "POST",
+              path: `/api/ora/autoprog/apply/${encodeURIComponent(proposalId)}`,
+              body: {},
+            }),
           body:
             JSON.stringify({}),
           cache:

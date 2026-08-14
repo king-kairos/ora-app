@@ -6,6 +6,10 @@ import {
 } from "next/server";
 
 import {
+  buildKairosPatchHeaders,
+} from "../../../../../src/security/kairosPatchSigner";
+
+import {
   getProposal,
 } from "../../../../../src/ai/autoprog/patchStore";
 
@@ -170,14 +174,13 @@ export async function POST(
         )}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-            Accept:
-              "application/json",
-            "x-kairos-seal":
+          headers:
+            buildKairosPatchHeaders({
               seal,
-          },
+              method: "POST",
+              path: `/api/ora/autoprog/apply/${encodeURIComponent(id)}`,
+              body: {},
+            }),
           body:
             JSON.stringify({}),
           cache: "no-store",
