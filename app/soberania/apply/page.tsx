@@ -130,10 +130,10 @@ export default function KairosApplyPage() {
     setError("");
     setLoading(true);
     try {
-      const data = await call(`/api/ora/autoprog/apply/${encodeURIComponent(pid)}`, {
+      const data = await call(`/api/kairos/autoprog/apply`, {
         method: "POST",
         headers,
-        body: JSON.stringify({}), // cuerpo vacío ok
+        body: JSON.stringify({ id: pid }),
       });
       setLog("✅ APPLY OK:\n" + safeJson(data));
       // refresca lista para ver status
