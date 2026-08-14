@@ -173,11 +173,6 @@ export async function POST(req: NextRequest) {
       "X-Kairos-Seal",
     ]);
 
-    const patchSecret = pickHeader(incomingHeaders, [
-      "x-kairos-patch-secret",
-      "X-Kairos-Patch-Secret",
-    ]);
-
     const results: any[] = [];
 
     for (const proposal of selected) {
@@ -190,7 +185,6 @@ export async function POST(req: NextRequest) {
           headers: {
             "Content-Type": "application/json",
             ...(kairosSeal ? { "x-kairos-seal": kairosSeal } : {}),
-            ...(patchSecret ? { "x-kairos-patch-secret": patchSecret } : {}),
           },
           body: JSON.stringify({
             proposalId,
