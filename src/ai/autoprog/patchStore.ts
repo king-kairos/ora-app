@@ -444,7 +444,11 @@ export async function getProposal(id: string) {
   }
 }
 
-export async function setStatus(id: string, status: string) {
+export async function setStatus(
+  id: string,
+  status: string,
+  metadataPatch?: Record<string, any>
+) {
   const cleanId = String(id || "").trim().replace(/\.json$/i, "");
   if (!cleanId) return null;
 
@@ -469,6 +473,19 @@ export async function setStatus(id: string, status: string) {
 
   proposal.status = nextStatus;
   proposal.updatedAt = now;
+
+  /*
+   * KAIROS_PATCHSTORE_METADATA_MERGE_V1
+   *
+   * Permite persistir evidencia canónica del lifecycle
+   * preservando metadata preexistente.
+   */
+  if (metadataPatch && typeof metadataPatch === "object") {
+    proposal.metadata = normalizeMetadata({
+      ...(proposal.metadata || {}),
+      ...metadataPatch,
+    });
+  }
 
   if (nextStatus === "approved") {
     proposal.approvedAt = now;

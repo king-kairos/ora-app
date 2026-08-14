@@ -246,6 +246,8 @@ type Proposal = {
   approved_by?: string;
   seal_hash?: string;
   integrity_hash?: string;
+  apply_mutated_files?: string[];
+  apply_has_real_mutation?: boolean;
 };
 
 type BranchRecord = {
@@ -765,16 +767,6 @@ async function readCloneRegistry(): Promise<CloneRecord[]> {
 
 async function writeCloneRegistry(items: CloneRecord[]) {
   await writeJsonArrayFile(CLONE_REGISTRY_FILE, items);
-}
-
-async function removeBranchRecordById(id: string) {
-  const branches = await readBranchRegistry();
-  await writeBranchRegistry(branches.filter((b) => b.id !== id));
-}
-
-async function removeCloneRecordById(id: string) {
-  const clones = await readCloneRegistry();
-  await writeCloneRegistry(clones.filter((c) => c.id !== id));
 }
 
 // ================== ESSENCE / PROFILE ==================
@@ -2196,6 +2188,10 @@ async function resolveCanonicalProposal(id: string): Promise<Proposal | null> {
       approved_by: p.approved_by ?? metadata.approved_by,
       seal_hash: p.seal_hash ?? metadata.seal_hash,
       integrity_hash: p.integrity_hash ?? metadata.integrity_hash,
+      apply_mutated_files:
+        p.apply_mutated_files ?? metadata.apply_mutated_files,
+      apply_has_real_mutation:
+        p.apply_has_real_mutation ?? metadata.apply_has_real_mutation,
       rejected_reason: p.rejected_reason ?? metadata.rejected_reason,
       metadata,
     };
@@ -2213,6 +2209,11 @@ async function resolveCanonicalProposal(id: string): Promise<Proposal | null> {
     (p.version ? 1 : 0) +
     (p.approved_at ? 1 : 0) +
     (p.integrity_hash ? 1 : 0) +
+    (p.apply_has_real_mutation === true ? 1 : 0) +
+    (Array.isArray(p.apply_mutated_files) &&
+    p.apply_mutated_files.length > 0
+      ? 1
+      : 0) +
     (Array.isArray(p.files) ? p.files.length : 0);
 
   return score(storeNorm) >= score(fileNorm) ? storeNorm : fileNorm;
@@ -2323,6 +2324,10 @@ async function listProposalObjects(): Promise<Proposal[]> {
       approved_by: p.approved_by ?? metadata.approved_by,
       seal_hash: p.seal_hash ?? metadata.seal_hash,
       integrity_hash: p.integrity_hash ?? metadata.integrity_hash,
+      apply_mutated_files:
+        p.apply_mutated_files ?? metadata.apply_mutated_files,
+      apply_has_real_mutation:
+        p.apply_has_real_mutation ?? metadata.apply_has_real_mutation,
       rejected_reason: p.rejected_reason ?? metadata.rejected_reason,
       metadata,
     };
@@ -2348,6 +2353,11 @@ async function listProposalObjects(): Promise<Proposal[]> {
       (prop.version ? 1 : 0) +
       (prop.approved_at ? 1 : 0) +
       (prop.integrity_hash ? 1 : 0) +
+      (prop.apply_has_real_mutation === true ? 1 : 0) +
+      (Array.isArray(prop.apply_mutated_files) &&
+      prop.apply_mutated_files.length > 0
+        ? 1
+        : 0) +
       (prop.files?.length || 0);
 
     if (score(norm) > score(existing)) {
@@ -2415,7 +2425,355 @@ async function withProposalMutationLock<T>(
   }
 }
 
+// ================== STRUCTURAL PROPOSAL IDEMPOTENCY ==================
+/**
+ * KAIROS_STRUCTURAL_PROPOSAL_IDEMPOTENCY_V1
+ *
+ * Serializa la creación de proposals estructurales por identidad lógica,
+ * no por proposalId.
+ *
+ * Ejemplos:
+ *   create_branch:security
+ *   create_clone:rafael-security
+ *   create_module:health
+ *
+ * Esto evita la carrera:
+ *
+ *   caller A -> busca -> no existe
+ *   caller B -> busca -> no existe
+ *   caller A -> crea
+ *   caller B -> crea
+ *
+ * Bajo este lock solamente uno puede ejecutar lookup + create
+ * para la misma identidad lógica.
+ *
+ * El lock es local al proceso Node. La unicidad persistente adicional
+ * continúa protegida por fingerprint en patchStore.
+ */
+const structuralProposalMutationTails =
+  new Map<string, Promise<void>>();
+
+async function withStructuralProposalLock<T>(
+  logicalKey: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const key =
+    String(logicalKey || "")
+      .trim()
+      .toLowerCase();
+
+  if (!key) {
+    throw new Error(
+      "STRUCTURAL_PROPOSAL_LOCK_KEY_REQUIRED"
+    );
+  }
+
+  const previous =
+    structuralProposalMutationTails.get(key) ||
+    Promise.resolve();
+
+  let release!: () => void;
+
+  const current =
+    new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+  const tail =
+    previous
+      .catch(() => {})
+      .then(() => current);
+
+  structuralProposalMutationTails.set(
+    key,
+    tail
+  );
+
+  await previous.catch(() => {});
+
+  try {
+    return await operation();
+  } finally {
+    release();
+
+    if (
+      structuralProposalMutationTails.get(key) === tail
+    ) {
+      structuralProposalMutationTails.delete(key);
+    }
+  }
+}
+
+type StructuralProposalAction =
+  | "create_branch"
+  | "create_clone"
+  | "create_module";
+
+function normalizeStructuralProposalTarget(
+  value: any
+) {
+  return slugify(
+    String(value || "")
+  ).toLowerCase();
+}
+
+function structuralProposalLogicalKey(
+  action: StructuralProposalAction,
+  target: string
+) {
+  const normalizedTarget =
+    normalizeStructuralProposalTarget(
+      target
+    );
+
+  if (!normalizedTarget) {
+    throw new Error(
+      "STRUCTURAL_PROPOSAL_TARGET_REQUIRED"
+    );
+  }
+
+  return `${action}:${normalizedTarget}`;
+}
+
+function getStructuralProposalLogicalKey(
+  proposal: Proposal
+): string | null {
+  const metadata: any =
+    proposal?.metadata || {};
+
+  const rawAction =
+    String(
+      metadata?.action || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const action =
+    rawAction ||
+    (metadata?.moduleName
+      ? "create_module"
+      : "");
+
+  if (action === "create_branch") {
+    const target =
+      normalizeStructuralProposalTarget(
+        metadata?.branchName
+      );
+
+    return target
+      ? `create_branch:${target}`
+      : null;
+  }
+
+  if (action === "create_clone") {
+    const target =
+      normalizeStructuralProposalTarget(
+        metadata?.cloneName
+      );
+
+    return target
+      ? `create_clone:${target}`
+      : null;
+  }
+
+  if (action === "create_module") {
+    const target =
+      normalizeStructuralProposalTarget(
+        metadata?.moduleName
+      );
+
+    return target
+      ? `create_module:${target}`
+      : null;
+  }
+
+  return null;
+}
+
+async function findActiveStructuralProposal(
+  action: StructuralProposalAction,
+  target: string
+): Promise<Proposal | null> {
+  const logicalKey =
+    structuralProposalLogicalKey(
+      action,
+      target
+    );
+
+  const proposals =
+    await listProposalObjects();
+
+  return (
+    proposals.find(
+      (proposal) =>
+        (
+          proposal.status === "pending" ||
+          proposal.status === "approved"
+        ) &&
+        getStructuralProposalLogicalKey(
+          proposal
+        ) === logicalKey
+    ) || null
+  );
+}
+
+async function getOrCreateStructuralProposal(
+  params: {
+    action: StructuralProposalAction;
+    target: string;
+    create: () => Promise<Proposal>;
+  }
+): Promise<{
+  proposal: Proposal;
+  created: boolean;
+  reused: boolean;
+  logicalKey: string;
+}> {
+  const logicalKey =
+    structuralProposalLogicalKey(
+      params.action,
+      params.target
+    );
+
+  return withStructuralProposalLock(
+    logicalKey,
+    async () => {
+      const existing =
+        await findActiveStructuralProposal(
+          params.action,
+          params.target
+        );
+
+      if (existing) {
+        return {
+          proposal: existing,
+          created: false,
+          reused: true,
+          logicalKey,
+        };
+      }
+
+      try {
+        const proposal =
+          await params.create();
+
+        return {
+          proposal,
+          created: true,
+          reused: false,
+          logicalKey,
+        };
+      } catch (error: any) {
+        /*
+         * Defensa adicional:
+         * si otra capa persistente detectó el duplicado,
+         * resolver nuevamente la proposal canónica en vez
+         * de convertir una operación idempotente en error.
+         */
+        if (
+          String(
+            error?.message || ""
+          ).startsWith(
+            "DUPLICATE_PROPOSAL"
+          )
+        ) {
+          const existingAfterRace =
+            await findActiveStructuralProposal(
+              params.action,
+              params.target
+            );
+
+          if (existingAfterRace) {
+            return {
+              proposal:
+                existingAfterRace,
+              created: false,
+              reused: true,
+              logicalKey,
+            };
+          }
+        }
+
+        throw error;
+      }
+    }
+  );
+}
+
 // ================== PROPOSAL OPERATIONS ==================
+/**
+ * KAIROS_STRUCTURAL_PRE_APPLY_VALIDATION_V1
+ *
+ * Las dependencias estructurales se validan ANTES de
+ * ejecutar PatchEngine.
+ *
+ * Especialmente:
+ * un clon no puede escribir su archivo base si la rama
+ * vinculada todavía no está materializada.
+ */
+async function assertStructuralPreconditionsBeforeApply(
+  proposal: Proposal
+) {
+  const metadata: any =
+    proposal?.metadata || {};
+
+  const action =
+    String(
+      metadata?.action || ""
+    )
+      .trim()
+      .toLowerCase() ||
+    (metadata?.moduleName
+      ? "create_module"
+      : "");
+
+  if (action !== "create_clone") {
+    return {
+      ok: true,
+      action,
+    };
+  }
+
+  const branchName =
+    slugify(
+      String(
+        metadata?.branchName || ""
+      )
+    );
+
+  if (!branchName) {
+    throw new Error(
+      "PRE_APPLY_CLONE_BRANCH_MISSING"
+    );
+  }
+
+  const branches =
+    await readBranchRegistry();
+
+  const linkedBranch =
+    branches.find(
+      (branch) =>
+        String(
+          branch?.branchName || ""
+        ).toLowerCase() ===
+        branchName.toLowerCase()
+    );
+
+  if (!linkedBranch) {
+    throw new Error(
+      "PRE_APPLY_CLONE_BRANCH_NOT_MATERIALIZED"
+    );
+  }
+
+  return {
+    ok: true,
+    action,
+    branchName,
+    linkedBranchId:
+      linkedBranch.id,
+  };
+}
+
 async function applyProposalByIdUnlocked(
   id: string,
   req: any
@@ -2470,6 +2828,15 @@ async function applyProposalByIdUnlocked(
     throw new Error("PROPOSAL_EMPTY_FILES");
   }
 
+  /*
+   * KAIROS_PRE_APPLY_DEPENDENCY_GATE_V1
+   *
+   * Debe ocurrir antes de cualquier llamada a PatchEngine.
+   */
+  await assertStructuralPreconditionsBeforeApply(
+    p
+  );
+
   const currentIntegrity = crypto
     .createHash("sha256")
     .update(JSON.stringify(p.files))
@@ -2517,12 +2884,30 @@ async function applyProposalByIdUnlocked(
     .map((x: any) => x?.path)
     .filter(Boolean);
 
+  /*
+   * KAIROS_APPLY_MUTATION_EVIDENCE_V1
+   *
+   * Evidencia derivada exclusivamente del resultado efectivo
+   * producido por PatchEngine.
+   */
+  const applyMutatedFiles = Array.from(
+    new Set(filePaths.map((x: any) => String(x)))
+  );
+  const applyHasRealMutation = applyMutatedFiles.length > 0;
+
   const newVersion = (p.version || 1) + 1;
   const updatedProposal: Proposal = {
     ...p,
     status: "applied",
     version: newVersion,
     parentVersion: p.version,
+    apply_mutated_files: applyMutatedFiles,
+    apply_has_real_mutation: applyHasRealMutation,
+    metadata: {
+      ...(p.metadata || {}),
+      apply_mutated_files: applyMutatedFiles,
+      apply_has_real_mutation: applyHasRealMutation,
+    },
   };
 
   /*
@@ -2533,7 +2918,10 @@ async function applyProposalByIdUnlocked(
    * puede ser ocultado ni convertirse en un falso éxito.
    */
   const updatedStore =
-    await setStatusStore(id, "applied");
+    await setStatusStore(id, "applied", {
+      apply_mutated_files: applyMutatedFiles,
+      apply_has_real_mutation: applyHasRealMutation,
+    });
 
   if (!updatedStore) {
     throw new Error(
@@ -2548,6 +2936,24 @@ async function applyProposalByIdUnlocked(
     ),
     updatedProposal
   );
+
+  /*
+   * KAIROS_REGISTRY_COMMIT_POINT_V1
+   *
+   * Llegar aquí significa:
+   *
+   * 1. PatchEngine terminó;
+   * 2. existe evidencia efectiva;
+   * 3. store canónico ya dice applied;
+   * 4. proposal-file ya dice applied.
+   *
+   * Solamente ahora una intención estructural
+   * puede convertirse en registry materializado.
+   */
+  const registryCommit =
+    await commitRegistryAfterSuccessfulApply(
+      updatedProposal
+    );
 
   for (const result of results) {
     await appendHistory({
@@ -2568,6 +2974,7 @@ async function applyProposalByIdUnlocked(
     results,
     filePaths,
     newVersion,
+    registryCommit,
   };
 }
 
@@ -2770,6 +3177,26 @@ async function publishProposalById(id: string, req: any) {
     throw new Error("PUBLISH_MISSING_KAIROS_APPROVAL");
   }
 
+  /*
+   * KAIROS_PUBLISH_REQUIRES_REGISTRY_MATERIALIZATION_V1
+   *
+   * Una proposal estructural aplicada pero cuyo commit
+   * de registry falló NO puede publicarse todavía.
+   */
+  const registryState =
+    await verifyRegistryMaterializationForProposal(
+      proposal
+    );
+
+  if (
+    registryState.required &&
+    !registryState.materialized
+  ) {
+    throw new Error(
+      "PUBLISH_REGISTRY_NOT_MATERIALIZED"
+    );
+  }
+
   const authorization =
     authorizeKairosExecution(
       new Request(
@@ -2799,12 +3226,22 @@ async function publishProposalById(id: string, req: any) {
     throw error;
   }
 
-  const filePaths =
-    proposal.targetFiles ||
-    proposal.files
-      ?.map((f: any) => f.path)
-      .filter(Boolean) ||
-    [];
+  /*
+   * KAIROS_PUBLISH_MUTATION_EVIDENCE_V1
+   *
+   * targetFiles/files expresan intención.
+   * Publish utiliza solamente evidencia persistida por APPLY.
+   */
+  const filePaths = Array.isArray(proposal.apply_mutated_files)
+    ? proposal.apply_mutated_files.filter(Boolean)
+    : [];
+
+  if (
+    proposal.apply_has_real_mutation !== true ||
+    filePaths.length === 0
+  ) {
+    throw new Error("PUBLISH_APPLY_EVIDENCE_MISSING");
+  }
 
   await coherenceAppend({
     type: "publish-ready",
@@ -2932,8 +3369,17 @@ async function ensureBranchRecord(input: {
       ? inferredType
       : "general";
 
+  /*
+   * KAIROS_BRANCH_PROPOSAL_FIRST_V1
+   *
+   * Este objeto es solamente un candidato en memoria.
+   * NO entra al registry aquí.
+   *
+   * La materialización ocurre exclusivamente en:
+   * commitRegistryAfterSuccessfulApply().
+   */
   const branch: BranchRecord = {
-    id: `branch_${Date.now()}`,
+    id: `proposed_branch_${Date.now()}`,
     branchName: branchSlug,
     title: String(input.title || "").trim() || humanTitleFromSlug(branchSlug),
     type: inferredType,
@@ -2954,11 +3400,8 @@ async function ensureBranchRecord(input: {
     createdAt: new Date().toISOString(),
   };
 
-  branches.unshift(branch);
-  await writeBranchRegistry(branches);
-
   await coherenceAppend({
-    type: "branch-created",
+    type: "branch-proposed",
     branchName: branch.branchName,
     supervisor: branch.supervisor,
     branchClass,
@@ -2986,8 +3429,17 @@ async function ensureCloneRecord(input: {
   const normalizedBranchName = slugify(input.branchName);
   if (!normalizedBranchName) throw new Error("BRANCH_NAME_REQUIRED_FOR_CLONE");
 
+  /*
+   * KAIROS_CLONE_PROPOSAL_FIRST_V1
+   *
+   * Este objeto es solamente un candidato en memoria.
+   * NO entra al registry aquí.
+   *
+   * El branch enlazado deberá estar materializado
+   * cuando llegue el Apply canónico del clon.
+   */
   const clone: CloneRecord = {
-    id: `clone_${Date.now()}`,
+    id: `proposed_clone_${Date.now()}`,
     cloneName: cloneSlug,
     title: String(input.title || "").trim() || humanTitleFromSlug(cloneSlug),
     branchName: normalizedBranchName,
@@ -3010,11 +3462,8 @@ async function ensureCloneRecord(input: {
     createdAt: new Date().toISOString(),
   };
 
-  clones.unshift(clone);
-  await writeCloneRegistry(clones);
-
   await coherenceAppend({
-    type: "clone-created",
+    type: "clone-proposed",
     cloneName: clone.cloneName,
     supervisor: clone.supervisor,
     branchName: clone.branchName,
@@ -3024,67 +3473,621 @@ async function ensureCloneRecord(input: {
 }
 
 async function createBranchProposal(branch: BranchRecord) {
-  const files = [
-    {
-      path: `app/${branch.branchName}/page.tsx`,
-      mode: "full-file",
-      content: buildBranchPageContent(branch.branchName, branch.title),
-    },
-    {
-      path: `app/api/${branch.branchName}/route.ts`,
-      mode: "full-file",
-      content: buildBranchApiContent(branch.branchName, branch.title),
-    },
-  ];
+  const branchName =
+    normalizeStructuralProposalTarget(
+      branch.branchName
+    );
 
-  const proposal = await createProposalEnhanced({
-    title: `ORA generó estructura base para rama ${branch.branchName}`,
-    summary: `Se preparó la rama ${branch.branchName} con página y ruta API base.`,
-    files,
-    source: "kairos-command-layer",
-    proposedBy: String(branch.supervisor || "rafael"),
-    intent: "improve",
-    metadata: {
+  const result =
+    await getOrCreateStructuralProposal({
       action: "create_branch",
-      branchName: branch.branchName,
-      branchClass: branch.branchClass,
-    },
-    version: 1,
-  });
+      target: branchName,
+      create: async () => {
+        const files = [
+          {
+            path: `app/${branchName}/page.tsx`,
+            mode: "full-file",
+            content: buildBranchPageContent(
+              branchName,
+              branch.title
+            ),
+          },
+          {
+            path: `app/api/${branchName}/route.ts`,
+            mode: "full-file",
+            content: buildBranchApiContent(
+              branchName,
+              branch.title
+            ),
+          },
+        ];
 
-  return proposal;
+        return createProposalEnhanced({
+          title: `ORA generó estructura base para rama ${branchName}`,
+          summary: `Se preparó la rama ${branchName} con página y ruta API base.`,
+          files,
+          source: "kairos-command-layer",
+          proposedBy: String(
+            branch.supervisor ||
+            "rafael"
+          ),
+          intent: "improve",
+          metadata: {
+            action: "create_branch",
+            branchName,
+            branchClass:
+              branch.branchClass,
+          },
+          version: 1,
+        });
+      },
+    });
+
+  return result.proposal;
 }
 
 async function createCloneProposal(clone: CloneRecord) {
-  const files = [
-    {
-      path: `src/ai/clones/${clone.cloneName}/index.ts`,
-      mode: "full-file",
-      content: buildCloneModuleContent(
-        clone.cloneName,
-        clone.branchName,
-        clone.supervisor,
-        clone.title
-      ),
-    },
-  ];
+  const cloneName =
+    normalizeStructuralProposalTarget(
+      clone.cloneName
+    );
 
-  const proposal = await createProposalEnhanced({
-    title: `ORA generó estructura base para clon ${clone.cloneName}`,
-    summary: `Se preparó el clon ${clone.cloneName} bajo la rama ${clone.branchName}.`,
-    files,
-    source: "kairos-command-layer",
-    proposedBy: String(clone.supervisor || "rafael"),
-    intent: "improve",
-    metadata: {
+  const branchName =
+    normalizeStructuralProposalTarget(
+      clone.branchName
+    );
+
+  const result =
+    await getOrCreateStructuralProposal({
       action: "create_clone",
-      cloneName: clone.cloneName,
-      branchName: clone.branchName,
-    },
-    version: 1,
+      target: cloneName,
+      create: async () => {
+        const files = [
+          {
+            path: `src/ai/clones/${cloneName}/index.ts`,
+            mode: "full-file",
+            content:
+              buildCloneModuleContent(
+                cloneName,
+                branchName,
+                clone.supervisor,
+                clone.title
+              ),
+          },
+        ];
+
+        return createProposalEnhanced({
+          title: `ORA generó estructura base para clon ${cloneName}`,
+          summary: `Se preparó el clon ${cloneName} bajo la rama ${branchName}.`,
+          files,
+          source:
+            "kairos-command-layer",
+          proposedBy: String(
+            clone.supervisor ||
+            "rafael"
+          ),
+          intent: "improve",
+          metadata: {
+            action: "create_clone",
+            cloneName,
+            branchName,
+          },
+          version: 1,
+        });
+      },
+    });
+
+  return result.proposal;
+}
+
+// ================== REGISTRY COMMIT AFTER APPLY ==================
+/**
+ * KAIROS_REGISTRY_COMMIT_AFTER_APPLY_V1
+ *
+ * Los registries representan estructura materializada, no intención.
+ *
+ * Por tanto:
+ * - proposal pending/approved NO crea registry;
+ * - apply fallido NO crea registry;
+ * - solamente un apply canónico persistido puede materializarlo.
+ *
+ * El commit es idempotente por nombre lógico.
+ */
+async function commitRegistryAfterSuccessfulApply(
+  proposal: Proposal
+) {
+  const metadata: any =
+    proposal?.metadata || {};
+
+  const action = String(
+    metadata?.action || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  /*
+   * Compatibilidad histórica:
+   *
+   * Las proposals antiguas de módulos no llevaban
+   * metadata.action=create_module, pero sí moduleName.
+   */
+  const effectiveAction =
+    action ||
+    (metadata?.moduleName
+      ? "create_module"
+      : "");
+
+  if (
+    effectiveAction !== "create_module" &&
+    effectiveAction !== "create_branch" &&
+    effectiveAction !== "create_clone"
+  ) {
+    return {
+      committed: false,
+      action: effectiveAction || null,
+      reason: "REGISTRY_COMMIT_NOT_REQUIRED",
+    };
+  }
+
+  const now =
+    new Date().toISOString();
+
+  if (effectiveAction === "create_module") {
+    const moduleName =
+      slugify(
+        String(
+          metadata?.moduleName || ""
+        )
+      );
+
+    if (!moduleName) {
+      throw new Error(
+        "REGISTRY_COMMIT_MODULE_NAME_MISSING"
+      );
+    }
+
+    const modules =
+      await readJsonArrayFile(
+        MODULE_REGISTRY_FILE
+      );
+
+    const existing =
+      modules.find(
+        (m: any) =>
+          String(
+            m?.moduleName || ""
+          ).toLowerCase() ===
+          moduleName.toLowerCase()
+      );
+
+    if (existing) {
+      return {
+        committed: false,
+        idempotent: true,
+        action: effectiveAction,
+        record: existing,
+      };
+    }
+
+    const branch =
+      String(
+        metadata?.branch || "general"
+      ).trim() || "general";
+
+    const entry = {
+      id: `mod_${Date.now()}`,
+      moduleName,
+      title:
+        String(
+          metadata?.title || ""
+        ).trim() ||
+        `ORA — ${humanTitleFromSlug(
+          moduleName
+        )}`,
+      branch,
+      source:
+        String(
+          proposal?.source ||
+          "intent-engine"
+        ),
+      status: "active",
+      createdAt: now,
+      materializedByProposalId:
+        proposal.id,
+    };
+
+    modules.unshift(entry);
+
+    await writeJsonArrayFile(
+      MODULE_REGISTRY_FILE,
+      modules
+    );
+
+    await coherenceAppend({
+      type: "module-created",
+      by: "canonical-apply",
+      moduleName,
+      branch,
+      proposalId: proposal.id,
+    });
+
+    return {
+      committed: true,
+      action: effectiveAction,
+      record: entry,
+    };
+  }
+
+  if (effectiveAction === "create_branch") {
+    const branchName =
+      slugify(
+        String(
+          metadata?.branchName || ""
+        )
+      );
+
+    if (!branchName) {
+      throw new Error(
+        "REGISTRY_COMMIT_BRANCH_NAME_MISSING"
+      );
+    }
+
+    const branches =
+      await readBranchRegistry();
+
+    const existing =
+      branches.find(
+        (b) =>
+          String(
+            b?.branchName || ""
+          ).toLowerCase() ===
+          branchName.toLowerCase()
+      );
+
+    if (existing) {
+      return {
+        committed: false,
+        idempotent: true,
+        action: effectiveAction,
+        record: existing,
+      };
+    }
+
+    const inferredType =
+      String(
+        metadata?.branchClass ||
+        inferBranchTypeFromName(
+          branchName
+        )
+      );
+
+    const branchClass =
+      inferredType ===
+        "personal-sovereign" ||
+      inferredType ===
+        "commercial" ||
+      inferredType ===
+        "allied" ||
+      inferredType ===
+        "health" ||
+      inferredType ===
+        "community" ||
+      inferredType ===
+        "public-gateway" ||
+      inferredType ===
+        "delivery" ||
+      inferredType ===
+        "lottery"
+        ? inferredType
+        : "general";
+
+    const supervisor =
+      isCelestialId(
+        proposal?.proposedBy
+      )
+        ? proposal.proposedBy
+        : "rafael";
+
+    const branch: BranchRecord = {
+      id: `branch_${Date.now()}`,
+      branchName,
+      title:
+        humanTitleFromSlug(
+          branchName
+        ),
+      type: inferredType,
+      owner:
+        branchClass ===
+        "personal-sovereign"
+          ? "Rey Kairos"
+          : branchClass ===
+            "allied"
+          ? "Allied Branch Layer"
+          : "ORA Branch Layer",
+      supervisor,
+      observerType:
+        "celestial-original",
+      observerLocked: true,
+      branchClass,
+      coreAccess: false,
+      canExecute: false,
+      requiresKairosSeal: true,
+      status: "active",
+      createdAt: now,
+    };
+
+    branches.unshift(branch);
+
+    await writeBranchRegistry(
+      branches
+    );
+
+    await coherenceAppend({
+      type: "branch-created",
+      by: "canonical-apply",
+      branchName,
+      supervisor,
+      branchClass,
+      proposalId: proposal.id,
+    });
+
+    return {
+      committed: true,
+      action: effectiveAction,
+      record: branch,
+    };
+  }
+
+  /*
+   * CREATE CLONE
+   *
+   * El branch debe existir YA materializado.
+   * Un clon no puede materializar silenciosamente
+   * una rama que nunca pasó por su propio apply.
+   */
+  const cloneName =
+    slugify(
+      String(
+        metadata?.cloneName || ""
+      )
+    );
+
+  const branchName =
+    slugify(
+      String(
+        metadata?.branchName || ""
+      )
+    );
+
+  if (!cloneName) {
+    throw new Error(
+      "REGISTRY_COMMIT_CLONE_NAME_MISSING"
+    );
+  }
+
+  if (!branchName) {
+    throw new Error(
+      "REGISTRY_COMMIT_CLONE_BRANCH_MISSING"
+    );
+  }
+
+  const branches =
+    await readBranchRegistry();
+
+  const linkedBranch =
+    branches.find(
+      (b) =>
+        String(
+          b?.branchName || ""
+        ).toLowerCase() ===
+        branchName.toLowerCase()
+    );
+
+  if (!linkedBranch) {
+    throw new Error(
+      "REGISTRY_COMMIT_CLONE_BRANCH_NOT_MATERIALIZED"
+    );
+  }
+
+  const clones =
+    await readCloneRegistry();
+
+  const existing =
+    clones.find(
+      (c) =>
+        String(
+          c?.cloneName || ""
+        ).toLowerCase() ===
+        cloneName.toLowerCase()
+    );
+
+  if (existing) {
+    return {
+      committed: false,
+      idempotent: true,
+      action: effectiveAction,
+      record: existing,
+    };
+  }
+
+  const supervisor =
+    isCelestialId(
+      proposal?.proposedBy
+    )
+      ? proposal.proposedBy
+      : isCelestialId(
+          linkedBranch?.supervisor
+        )
+      ? linkedBranch.supervisor
+      : "rafael";
+
+  const clone: CloneRecord = {
+    id: `clone_${Date.now()}`,
+    cloneName,
+    title:
+      humanTitleFromSlug(
+        cloneName
+      ),
+    branchName,
+    supervisor,
+    archetype: "branch-tool",
+    loyalty: "Rey Kairos",
+    autonomous: true,
+    canProgram: true,
+    canPropose: true,
+    canExecute: false,
+    requiresKairosSeal: true,
+    coreAccess: false,
+    essenceAccess: false,
+    canMutateBranchArchitecture:
+      false,
+    canTouchObserver: false,
+    canEscalatePrivileges: false,
+    status: "active",
+    restriction:
+      "Herramienta operativa. No puede tocar núcleo, observador original, arquitectura de rama ni ejecutar sin sello de Kairos.",
+    createdAt: now,
+  };
+
+  clones.unshift(clone);
+
+  await writeCloneRegistry(
+    clones
+  );
+
+  await coherenceAppend({
+    type: "clone-created",
+    by: "canonical-apply",
+    cloneName,
+    supervisor,
+    branchName,
+    proposalId: proposal.id,
   });
 
-  return proposal;
+  return {
+    committed: true,
+    action: effectiveAction,
+    record: clone,
+  };
+}
+
+/**
+ * KAIROS_REGISTRY_MATERIALIZATION_VERIFY_V1
+ *
+ * Comprueba el estado REAL de los registries.
+ * No confía solamente en metadata declarativa.
+ */
+async function verifyRegistryMaterializationForProposal(
+  proposal: Proposal
+) {
+  const metadata: any =
+    proposal?.metadata || {};
+
+  const action =
+    String(
+      metadata?.action || ""
+    )
+      .trim()
+      .toLowerCase() ||
+    (metadata?.moduleName
+      ? "create_module"
+      : "");
+
+  if (
+    action !== "create_module" &&
+    action !== "create_branch" &&
+    action !== "create_clone"
+  ) {
+    return {
+      required: false,
+      materialized: true,
+      action: action || null,
+    };
+  }
+
+  if (action === "create_module") {
+    const moduleName =
+      slugify(
+        String(
+          metadata?.moduleName || ""
+        )
+      );
+
+    const modules =
+      await readJsonArrayFile(
+        MODULE_REGISTRY_FILE
+      );
+
+    const record =
+      modules.find(
+        (m: any) =>
+          String(
+            m?.moduleName || ""
+          ).toLowerCase() ===
+          moduleName.toLowerCase()
+      ) || null;
+
+    return {
+      required: true,
+      materialized: Boolean(record),
+      action,
+      record,
+    };
+  }
+
+  if (action === "create_branch") {
+    const branchName =
+      slugify(
+        String(
+          metadata?.branchName || ""
+        )
+      );
+
+    const branches =
+      await readBranchRegistry();
+
+    const record =
+      branches.find(
+        (b) =>
+          String(
+            b?.branchName || ""
+          ).toLowerCase() ===
+          branchName.toLowerCase()
+      ) || null;
+
+    return {
+      required: true,
+      materialized: Boolean(record),
+      action,
+      record,
+    };
+  }
+
+  const cloneName =
+    slugify(
+      String(
+        metadata?.cloneName || ""
+      )
+    );
+
+  const clones =
+    await readCloneRegistry();
+
+  const record =
+    clones.find(
+      (c) =>
+        String(
+          c?.cloneName || ""
+        ).toLowerCase() ===
+        cloneName.toLowerCase()
+    ) || null;
+
+  return {
+    required: true,
+    materialized: Boolean(record),
+    action,
+    record,
+  };
 }
 
 // ================== MODULE FROM INTENT ==================
@@ -3108,19 +4111,22 @@ async function createModuleFromIntent(intent: string) {
     };
   }
 
-  const now = new Date().toISOString();
+  /*
+   * KAIROS_MODULE_PROPOSAL_FIRST_V1
+   *
+   * No materializar module-registry aquí.
+   * El registro aparece únicamente después
+   * del apply canónico exitoso.
+   */
   const entry = {
-    id: `mod_${Date.now()}`,
+    id: null,
     moduleName,
     title,
     branch,
     source: "intent-engine",
-    status: "active",
-    createdAt: now,
+    status: "proposed",
+    createdAt: null,
   };
-
-  modules.unshift(entry);
-  await writeJsonArrayFile(MODULE_REGISTRY_FILE, modules);
 
   const componentName = humanTitleFromSlug(moduleName).replace(/\s+/g, "");
   const files = [
@@ -3171,26 +4177,52 @@ async function createModuleFromIntent(intent: string) {
     },
   ];
 
-  const proposal = await createProposalEnhanced({
-    title: `ORA generó estructura base para módulo ${moduleName}`,
-    summary: `Se creó la plantilla inicial del módulo ${moduleName} con página, ruta API y lógica base.`,
-    files,
-    source: "intent-engine",
-    proposedBy: "arturo",
-    intent: "improve",
-    metadata: { moduleName, branch },
-    version: 1,
-  });
+  const structuralResult =
+    await getOrCreateStructuralProposal({
+      action: "create_module",
+      target: moduleName,
+      create: async () =>
+        createProposalEnhanced({
+          title: `ORA generó estructura base para módulo ${moduleName}`,
+          summary: `Se creó la plantilla inicial del módulo ${moduleName} con página, ruta API y lógica base.`,
+          files,
+          source: "intent-engine",
+          proposedBy: "arturo",
+          intent: "improve",
+          metadata: {
+            action: "create_module",
+            moduleName,
+            branch,
+            title,
+          },
+          version: 1,
+        }),
+    });
+
+  const proposal =
+    structuralResult.proposal;
 
   await coherenceAppend({
-    type: "module-created",
+    type: structuralResult.created
+      ? "module-proposed"
+      : "module-proposal-reused",
     by: "intent",
     moduleName,
     branch,
     proposalId: proposal.id,
+    logicalKey:
+      structuralResult.logicalKey,
   });
 
-  return { created: true, module: entry, proposalId: proposal.id, proposal };
+  return {
+    created:
+      structuralResult.created,
+    proposalReused:
+      structuralResult.reused,
+    module: entry,
+    proposalId: proposal.id,
+    proposal,
+  };
 }
 
 // ================== AUTO-RECONCILIATION ==================
@@ -3385,7 +4417,6 @@ async function runAutoprogSupervisorAudit() {
         try {
           proposal = await createBranchProposal(branchResult.branch);
         } catch (err) {
-          await removeBranchRecordById(branchResult.branch.id).catch(() => {});
           throw err;
         }
 
@@ -4233,7 +5264,6 @@ async function executeKairosCommand(text: string) {
         try {
           proposal = await createBranchProposal(branchResult.branch);
         } catch (err) {
-          await removeBranchRecordById(branchResult.branch.id).catch(() => {});
           throw err;
         }
       }
@@ -4262,48 +5292,75 @@ async function executeKairosCommand(text: string) {
         supervisor,
       });
 
-      let cloneResult;
+      /*
+       * KAIROS_CLONE_BRANCH_DEPENDENCY_PROPOSAL_V1
+       *
+       * Si la rama todavía no existe, se crea SU proposal,
+       * no su registry.
+       *
+       * El clon puede ser propuesto en el mismo comando,
+       * pero su Apply será rechazado hasta que la rama
+       * quede materializada por su propio Apply.
+       */
+      let branchProposal = null;
 
-      try {
-        cloneResult = await ensureCloneRecord({
+      if (branchResult.created) {
+        branchProposal =
+          await createBranchProposal(
+            branchResult.branch
+          );
+      }
+
+      const cloneResult =
+        await ensureCloneRecord({
           cloneName: displayName,
           title: displayName,
-          branchName: branchResult.branch.branchName,
+          branchName:
+            branchResult.branch.branchName,
           supervisor,
         });
-      } catch (err) {
-        if (branchResult.created) {
-          await removeBranchRecordById(branchResult.branch.id).catch(() => {});
-        }
-        throw err;
-      }
 
       let proposal = null;
 
       if (cloneResult.created) {
-        try {
-          proposal = await createCloneProposal(cloneResult.clone);
-        } catch (err) {
-          await removeCloneRecordById(cloneResult.clone.id).catch(() => {});
-          if (branchResult.created) {
-            await removeBranchRecordById(branchResult.branch.id).catch(
-              () => {}
-            );
-          }
-          throw err;
-        }
+        proposal =
+          await createCloneProposal(
+            cloneResult.clone
+          );
       }
 
       return {
         ok: true,
         kind: "clone",
         parsed,
-        linkedBranch: branchResult.branch,
-        linkedBranchCreated: branchResult.created,
-        clone: cloneResult.clone,
-        cloneCreated: cloneResult.created,
-        proposalId: proposal?.id || null,
+        linkedBranch:
+          branchResult.branch,
+        linkedBranchCreated:
+          branchResult.created,
+        branchProposalId:
+          branchProposal?.id || null,
+        branchProposal,
+        clone:
+          cloneResult.clone,
+        cloneCreated:
+          cloneResult.created,
+        proposalId:
+          proposal?.id || null,
         proposal,
+        dependency: branchResult.created
+          ? {
+              type:
+                "branch-before-clone",
+              branchProposalId:
+                branchProposal?.id || null,
+              cloneProposalId:
+                proposal?.id || null,
+              applyOrder: [
+                branchProposal?.id,
+                proposal?.id,
+              ].filter(Boolean),
+            }
+          : null,
       };
     }
 
@@ -5739,7 +6796,6 @@ const createBranchHandler = async (req: any, res: any) => {
       try {
         proposal = await createBranchProposal(branchResult.branch);
       } catch (err) {
-        await removeBranchRecordById(branchResult.branch.id).catch(() => {});
         throw err;
       }
     }
@@ -5811,48 +6867,253 @@ app.post("/api/ora/autoprog/clone/create", requireKairosSeal, strictLimiter, asy
       supervisor,
     });
 
-    let cloneResult;
+    let branchProposal = null;
 
-    try {
-      cloneResult = await ensureCloneRecord({
+    if (branchResult.created) {
+      branchProposal =
+        await createBranchProposal(
+          branchResult.branch
+        );
+    }
+
+    const cloneResult =
+      await ensureCloneRecord({
         cloneName: displayName,
-        title: prettifyLabel(displayName),
-        branchName: branchResult.branch.branchName,
+        title:
+          prettifyLabel(displayName),
+        branchName:
+          branchResult.branch.branchName,
         supervisor,
       });
-    } catch (err) {
-      if (branchResult.created) {
-        await removeBranchRecordById(branchResult.branch.id).catch(() => {});
-      }
-      throw err;
-    }
 
     let proposal = null;
 
     if (cloneResult.created) {
-      try {
-        proposal = await createCloneProposal(cloneResult.clone);
-      } catch (err) {
-        await removeCloneRecordById(cloneResult.clone.id).catch(() => {});
-        if (branchResult.created) {
-          await removeBranchRecordById(branchResult.branch.id).catch(() => {});
-        }
-        throw err;
-      }
+      proposal =
+        await createCloneProposal(
+          cloneResult.clone
+        );
     }
 
     res.json({
       ok: true,
-      linkedBranch: branchResult.branch,
-      cloneCreated: cloneResult.created,
-      clone: cloneResult.clone,
-      proposalId: proposal?.id || null,
+      linkedBranch:
+        branchResult.branch,
+      linkedBranchCreated:
+        branchResult.created,
+      branchProposalId:
+        branchProposal?.id || null,
+      branchProposal,
+      cloneCreated:
+        cloneResult.created,
+      clone:
+        cloneResult.clone,
+      proposalId:
+        proposal?.id || null,
       proposal,
+      dependency: branchResult.created
+        ? {
+            type:
+              "branch-before-clone",
+            branchProposalId:
+              branchProposal?.id || null,
+            cloneProposalId:
+              proposal?.id || null,
+            applyOrder: [
+              branchProposal?.id,
+              proposal?.id,
+            ].filter(Boolean),
+          }
+        : null,
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message || "CLONE_CREATE_FAIL" });
   }
 });
+
+// ================== REGISTRY RECOMMIT RECOVERY ==================
+app.post(
+  "/api/ora/autoprog/registry/recommit/:id",
+  requireKairosSeal,
+  strictLimiter,
+  async (req, res) => {
+    try {
+      const id =
+        String(
+          req.params.id || ""
+        ).trim();
+
+      if (!id) {
+        return res.status(400).json({
+          ok: false,
+          error: "MISSING_ID",
+        });
+      }
+
+      /*
+       * KAIROS_REGISTRY_RECOMMIT_GATE_V1
+       *
+       * Recommit muta estructura persistida,
+       * por lo tanto vuelve a exigir la Puerta Kairos.
+       *
+       * NO vuelve a ejecutar PatchEngine.
+       */
+      const authorization =
+        authorizeKairosExecution(
+          new Request(
+            "http://127.0.0.1/api/ora/autoprog/registry/recommit",
+            {
+              method: "POST",
+              headers: {
+                "x-kairos-seal":
+                  String(
+                    req.header(
+                      "x-kairos-seal"
+                    ) || ""
+                  ),
+              },
+            }
+          ),
+          "apply_patch"
+        );
+
+      if (!authorization.ok) {
+        return res
+          .status(
+            authorization.status
+          )
+          .json({
+            ok: false,
+            action:
+              authorization.action,
+            error:
+              authorization.error,
+          });
+      }
+
+      const result =
+        await withProposalMutationLock(
+          id,
+          async () => {
+            const proposal =
+              await resolveCanonicalProposal(
+                id
+              );
+
+            if (!proposal) {
+              throw new Error(
+                "NOT_FOUND"
+              );
+            }
+
+            if (
+              proposal.status !==
+              "applied"
+            ) {
+              throw new Error(
+                "REGISTRY_RECOMMIT_REQUIRES_APPLIED"
+              );
+            }
+
+            if (
+              proposal.apply_has_real_mutation !==
+                true ||
+              !Array.isArray(
+                proposal.apply_mutated_files
+              ) ||
+              proposal
+                .apply_mutated_files
+                .length === 0
+            ) {
+              throw new Error(
+                "REGISTRY_RECOMMIT_APPLY_EVIDENCE_MISSING"
+              );
+            }
+
+            const before =
+              await verifyRegistryMaterializationForProposal(
+                proposal
+              );
+
+            if (
+              before.required &&
+              before.materialized
+            ) {
+              return {
+                ok: true,
+                id,
+                recovered: false,
+                idempotent: true,
+                before,
+                after: before,
+                message:
+                  "Registry ya estaba materializado.",
+              };
+            }
+
+            const commit =
+              await commitRegistryAfterSuccessfulApply(
+                proposal
+              );
+
+            const after =
+              await verifyRegistryMaterializationForProposal(
+                proposal
+              );
+
+            if (
+              after.required &&
+              !after.materialized
+            ) {
+              throw new Error(
+                "REGISTRY_RECOMMIT_VERIFICATION_FAILED"
+              );
+            }
+
+            await coherenceAppend({
+              type:
+                "registry-recommit",
+              proposalId: id,
+              commit,
+            });
+
+            return {
+              ok: true,
+              id,
+              recovered: true,
+              idempotent: false,
+              before,
+              commit,
+              after,
+              patchReexecuted:
+                false,
+            };
+          }
+        );
+
+      return res.json(result);
+    } catch (e: any) {
+      const message =
+        e?.message ||
+        "REGISTRY_RECOMMIT_FAIL";
+
+      const status =
+        message === "NOT_FOUND"
+          ? 404
+          : Number(
+              e?.status
+            ) || 400;
+
+      return res
+        .status(status)
+        .json({
+          ok: false,
+          error: message,
+          patchReexecuted: false,
+        });
+    }
+  }
+);
 
 // ================== SUPERVISOR ==================
 app.post("/api/ora/autoprog/supervisor/run", requireKairosSeal, criticalLimiter, async (_req, res) => {
