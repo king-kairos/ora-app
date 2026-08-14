@@ -69,20 +69,6 @@ function readKairosSeal() {
   ).trim();
 }
 
-function readPatchSecret() {
-  if (typeof window === "undefined") return "";
-  return String(
-    localStorage.getItem("KAIROS_PATCH_SECRET") ||
-      localStorage.getItem("kairos_patch_secret") ||
-      sessionStorage.getItem("KAIROS_PATCH_SECRET") ||
-      sessionStorage.getItem("kairos_patch_secret") ||
-      localStorage.getItem("KAIROS_PATCH_SIG") ||
-      localStorage.getItem("kairos_patch_sig") ||
-      sessionStorage.getItem("KAIROS_PATCH_SIG") ||
-      sessionStorage.getItem("kairos_patch_sig") ||
-      ""
-  ).trim();
-}
 
 async function safeJson(res: Response) {
   const text = await res.text();
@@ -187,7 +173,6 @@ export default function KairosBuilderPanel() {
 
   const targetFiles = useMemo(() => splitTargetFiles(targetFilesText), [targetFilesText]);
   const sealLoaded = useMemo(() => !!readKairosSeal(), [busy, message]);
-  const patchSecretLoaded = useMemo(() => !!readPatchSecret(), [busy, message]);
 
   useEffect(() => {
     void fetchProposals();
