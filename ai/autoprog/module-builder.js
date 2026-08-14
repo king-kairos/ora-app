@@ -1,32 +1,14 @@
-const fs = require("fs");
-const path = require("path");
-
-function createModule(name) {
-
-  const base = path.join(process.cwd(), "app", name);
-
-  if (fs.existsSync(base)) {
-    return { ok: false, message: "módulo ya existe" };
-  }
-
-  fs.mkdirSync(base, { recursive: true });
-
-  const page = `
-export default function ${name}Page() {
-  return (
-    <div>
-      <h1>Módulo ${name}</h1>
-    </div>
+/**
+ * KAIROS_LEGACY_MODULE_BUILDER_RETIRED_V1
+ *
+ * La creación directa de app/<module>/page.tsx
+ * fue retirada. Todo cambio estructural debe vivir
+ * dentro de una proposal y pasar por Apply canónico.
+ */
+function createModule(_name) {
+  throw new Error(
+    "LEGACY_DIRECT_MODULE_BUILD_RETIRED"
   );
-}
-`;
-
-  fs.writeFileSync(path.join(base, "page.tsx"), page);
-
-  return {
-    ok: true,
-    module: name
-  };
 }
 
 module.exports = {

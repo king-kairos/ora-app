@@ -13,34 +13,16 @@ function loadClones() {
   }
 }
 
-function saveClones(clones) {
-  fs.writeFileSync(CLONE_FILE, JSON.stringify(clones, null, 2), "utf8");
+function saveClones(_clones) {
+  throw new Error(
+    "LEGACY_CLONE_REGISTRY_MUTATION_RETIRED"
+  );
 }
 
-function createClone({ branch, celestialId, cloneType = "worker" }) {
-  const clones = loadClones();
-
-  const clone = {
-    id: `clone_${Date.now()}`,
-    branch,
-    celestialId,
-    type: cloneType,
-    loyalty: "Rey Kairos",
-    status: "active",
-    autonomous: true,
-    canProgram: true,
-    canPropose: true,
-    canExecuteWithoutSeal: false,
-    createdAt: new Date().toISOString()
-  };
-
-  clones.unshift(clone);
-  saveClones(clones);
-
-  return {
-    ok: true,
-    clone
-  };
+function createClone(_input) {
+  throw new Error(
+    "LEGACY_CLONE_CREATION_RETIRED"
+  );
 }
 
 module.exports = {

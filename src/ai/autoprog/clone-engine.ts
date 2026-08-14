@@ -36,26 +36,16 @@ function writeRegistry(data: Clone[]) {
   fs.writeFileSync(registryFile, JSON.stringify(data, null, 2));
 }
 
-export function createClone(type: CloneType) {
-  const registry = readRegistry();
-
-  const clone: Clone = {
-    id: "clone_" + Date.now(),
-    type,
-    createdAt: new Date().toISOString(),
-    loyalty: "celestial",
-    status: "active",
-  };
-
-  registry.push(clone);
-
-  writeRegistry(registry);
-
-  return {
-    ok: true,
-    clone,
-    totalClones: registry.length,
-  };
+/**
+ * KAIROS_DIRECT_CLONE_MUTATION_RETIRED_V1
+ *
+ * La materialización de clones pertenece exclusivamente
+ * al commit posterior al Apply canónico.
+ */
+export function createClone(_type: CloneType) {
+  throw new Error(
+    "DIRECT_CLONE_REGISTRY_MUTATION_RETIRED"
+  );
 }
 
 export function listClones() {
