@@ -14,6 +14,7 @@ export type PatchFile = {
   endMarker?: string;
   find?: string;
   replaceWith?: string;
+  operations?: Array<Record<string, any>>;
 };
 
 export type ProposalMetadata = Record<string, any> | null;
@@ -187,6 +188,7 @@ function normalizeFiles(files: any[]): PatchFile[] {
           typeof f?.endMarker === "string" ? f.endMarker : undefined,
         find: typeof f?.find === "string" ? f.find : undefined,
         replaceWith,
+        operations: Array.isArray(f?.operations) ? f.operations : undefined,
       };
     })
     .filter((f) => f.path);
@@ -249,6 +251,7 @@ function generateFingerprint(
       endMarker: f.endMarker ?? "",
       find: f.find ?? "",
       replaceWith: f.replaceWith ?? "",
+      operations: f.operations ?? null,
     })),
   };
 

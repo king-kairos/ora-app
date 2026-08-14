@@ -160,9 +160,26 @@ export function resolveSovereignTargets(input: {
     );
   }
 
+  const fallbackTargets = unique(
+    Array.isArray(input.fallbackTargets)
+      ? input.fallbackTargets
+      : []
+  );
+
   /*
-   * Si Branch Awareness reconoció una rama, su registro central
-   * tiene prioridad absoluta sobre palabras sueltas de la intención.
+   * Si ya existe una selección semántica concreta, conservarla
+   * y validarla contra la rama soberana reconocida.
+   */
+  if (normalizedBranch && fallbackTargets.length > 0) {
+    return validateTargetsForBranch(
+      normalizedBranch,
+      fallbackTargets
+    );
+  }
+
+  /*
+   * Sin selección semántica previa, usar el registro completo
+   * de targets de la rama reconocida.
    */
   if (normalizedBranch) {
     const branchTargets =
@@ -173,12 +190,6 @@ export function resolveSovereignTargets(input: {
       branchTargets
     );
   }
-
-  const fallbackTargets = unique(
-    Array.isArray(input.fallbackTargets)
-      ? input.fallbackTargets
-      : []
-  );
 
   return {
     branch: clean(input.branch) || null,

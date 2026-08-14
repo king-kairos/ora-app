@@ -27,6 +27,12 @@ export default function Page() {
             </div>
           ))}
         </div>
+        {/* ORA_STATUS_CARD_V1 */}
+        <div style={{ marginTop: 24, border: "1px solid rgba(0,255,136,.35)", borderRadius: 14, padding: 18, background: "#020402" }}>
+          <div style={{ color: "#d4af37", fontSize: 13 }}>Estado del Sistema</div>
+          <div style={{ color: "#39ff88", fontSize: 20, fontWeight: 800, marginTop: 8 }}>ORA SECURITY ONLINE</div>
+          <div style={{ color: "#9fffcc", fontSize: 12, marginTop: 8 }}>Cámaras · Alertas · Eventos · Zonas · Negocios · Observer</div>
+        </div>
       </section>
 
       <footer style={{ marginTop: 24, color: "#7fffb2", fontSize: 12 }}>

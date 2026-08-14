@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
   function clean(value: unknown) {
   return String(value || "").trim();
 }
@@ -399,6 +402,53 @@ export function generateAutoprogContent(input: {
       "app/pollera/page.tsx",
     ];
 
+    if (
+      target === "app/security/page.tsx" &&
+      (
+        normalizeText(intent).includes("estado del sistema") ||
+        normalizeText(intent).includes("status") ||
+        normalizeText(intent).includes("tarjeta") ||
+        normalizeText(intent).includes("card")
+      )
+    ) {
+      const find =
+        '          ))}\n        </div>\n      </section>';
+
+      const replaceWith =
+        '          ))}\n' +
+        '        </div>\n' +
+        '        {/* ORA_STATUS_CARD_V1 */}\n' +
+        '        <div style={{ marginTop: 24, border: "1px solid rgba(0,255,136,.35)", borderRadius: 14, padding: 18, background: "#020402" }}>\n' +
+        '          <div style={{ color: "#d4af37", fontSize: 13 }}>Estado del Sistema</div>\n' +
+        '          <div style={{ color: "#39ff88", fontSize: 20, fontWeight: 800, marginTop: 8 }}>ORA SECURITY ONLINE</div>\n' +
+        '          <div style={{ color: "#9fffcc", fontSize: 12, marginTop: 8 }}>Cámaras · Alertas · Eventos · Zonas · Negocios · Observer</div>\n' +
+        '        </div>\n' +
+        '      </section>';
+
+      return JSON.stringify({
+        title: "Patch incremental: Estado del Sistema",
+        summary:
+          "Agrega una tarjeta Estado del Sistema al dashboard existente de ORA Security sin reemplazar la página completa.",
+        files: [
+          {
+            path: target,
+            operations: [
+              {
+                type: "replace-exact",
+                find,
+                replaceWith
+              }
+            ]
+          }
+        ],
+        requiresApproval: true,
+        sealRequired: true,
+        canExecute: false,
+        branch,
+        proposedBy
+      }, null, 2);
+    }
+
     if (existingBranchTargets.includes(target)) {
       return JSON.stringify({
         title: `Patch soberano incremental para ${target}`,
@@ -455,25 +505,42 @@ export function generateAutoprogFiles(input: {
   risk: string;
   branch?: string | null;
 }) {
-  const protectedBranchTargets = new Set([
-    "app/security/page.tsx",
-    "app/health/page.tsx",
-    "app/presence/page.tsx",
-    "app/marketing/page.tsx",
-    "app/agriculture/page.tsx",
-    "app/pollera/page.tsx",
-  ]);
+  return input.targetFiles.map((file) => {
+    const generated = generateAutoprogContent({
+      intent: input.intent,
+      target: file,
+      proposedBy: input.proposedBy,
+      risk: input.risk,
+      branch: input.branch,
+    });
 
-  return input.targetFiles
-    .filter((file) => !protectedBranchTargets.has(clean(file)))
-    .map((file) => ({
+    try {
+      const parsed = JSON.parse(generated);
+      const generatedFile = Array.isArray(parsed?.files)
+        ? parsed.files.find((item: any) => clean(item?.path) === clean(file))
+        : null;
+
+      if (generatedFile && Array.isArray(generatedFile.operations)) {
+        return {
+          path: file,
+          operations: generatedFile.operations,
+        };
+      }
+    } catch {}
+
+    const existingTarget = fs.existsSync(
+      path.join(process.cwd(), clean(file))
+    );
+
+    if (existingTarget) {
+      throw new Error(
+        `AUTOPROG_EXISTING_TARGET_REQUIRES_OPERATIONS:${clean(file)}`
+      );
+    }
+
+    return {
       path: file,
-      content: generateAutoprogContent({
-        intent: input.intent,
-        target: file,
-        proposedBy: input.proposedBy,
-        risk: input.risk,
-        branch: input.branch,
-      }),
-    }));
+      content: generated,
+    };
+  });
 }

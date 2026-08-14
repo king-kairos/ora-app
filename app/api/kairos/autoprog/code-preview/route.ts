@@ -27,6 +27,7 @@ export async function POST(req: Request) {
       target,
       proposedBy: plan.proposedBy,
       risk: plan.risk,
+      branch,
     });
 
     let parsedPatch: any = null;

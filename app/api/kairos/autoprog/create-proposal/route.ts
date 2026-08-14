@@ -40,6 +40,7 @@ export async function POST(req: Request) {
             targetFiles: plan.targetFiles,
             proposedBy: plan.proposedBy,
             risk: plan.risk,
+            branch,
           })
         : [
             {

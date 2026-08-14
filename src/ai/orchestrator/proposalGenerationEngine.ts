@@ -290,6 +290,16 @@ function inferOraSecurityTargets(intent: string): string[] {
 
   if (!isSecurity) return [];
 
+  const isStatusCard =
+    text.includes("tarjeta") ||
+    text.includes("card") ||
+    text.includes("estado del sistema") ||
+    text.includes("status");
+
+  if (isStatusCard) {
+    return ["app/security/page.tsx"];
+  }
+
   return [
     "app/security/page.tsx",
     "app/security/components/SecurityDashboard.tsx",
