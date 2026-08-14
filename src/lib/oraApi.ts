@@ -50,139 +50,14 @@ function getSealValue(): string {
 return String(localSeal || "").trim();
 }
 
-function getPatchSecretValue(): string {
-  if (typeof window === "undefined") return "";
-
-  const localSecret =
-    localStorage.getItem("KAIROS_PATCH_SECRET") ||
-    localStorage.getItem("kairos_patch_secret") ||
-    sessionStorage.getItem("KAIROS_PATCH_SECRET") ||
-    sessionStorage.getItem("kairos_patch_secret") ||
-    "";
-
-  const envSecret =
-    (process as any)?.env?.NEXT_PUBLIC_KAIROS_PATCH_SECRET || "";
-
-  return String(localSecret || envSecret || "").trim();
-}
-
-function getLegacyPatchSigValue(): string {
-  if (typeof window === "undefined") return "";
-
-  const localSig =
-    localStorage.getItem("KAIROS_PATCH_SIG") ||
-    localStorage.getItem("kairos_patch_sig") ||
-    sessionStorage.getItem("KAIROS_PATCH_SIG") ||
-    sessionStorage.getItem("kairos_patch_sig") ||
-    "";
-
-  const envSig =
-    (process as any)?.env?.NEXT_PUBLIC_KAIROS_PATCH_SIG || "";
-
-  return String(localSig || envSig || "").trim();
-}
-
 function getAuthHeaders(): Record<string, string> {
   const seal = getSealValue();
-  const legacyPatchSig = getLegacyPatchSigValue();
 
   const headers: Record<string, string> = {};
 
   if (seal) headers["x-kairos-seal"] = seal;
 
-  if (legacyPatchSig) headers["x-kairos-patch-sig"] = legacyPatchSig;
-
   return headers;
-}
-
-function stableStringify(x: any): string {
-  if (x === null || typeof x !== "object") return JSON.stringify(x);
-  if (Array.isArray(x)) return "[" + x.map(stableStringify).join(",") + "]";
-
-  const keys = Object.keys(x).sort();
-
-  return (
-    "{" +
-    keys
-      .map((k) => JSON.stringify(k) + ":" + stableStringify(x[k]))
-      .join(",") +
-    "}"
-  );
-}
-
-function randomNonce(size = 16): string {
-  const bytes = new Uint8Array(size);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function toHex(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return toHex(hash);
-}
-
-async function hmacSha256Hex(secret: string, message: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(message)
-  );
-
-  return toHex(sig);
-}
-
-function isSensitivePatchRoute(url: string): boolean {
-  return (
-    /\/api\/ora\/autoprog\/apply\//.test(url) ||
-    /\/api\/ora\/autoprog\/publish$/.test(url) ||
-    /\/api\/autoprog\/apply$/.test(url) ||
-    /\/api\/autoprog\/publish$/.test(url)
-  );
-}
-
-async function buildSensitivePatchHeaders(
-  url: string,
-  method: string,
-  bodyValue: any
-): Promise<Record<string, string>> {
-  const secret = getPatchSecretValue();
-  if (!secret) {
-    throw new Error("KAIROS_PATCH_SECRET_MISSING_IN_BROWSER");
-  }
-
-  const ts = String(Date.now());
-  const nonce = randomNonce(16);
-  const canonicalBody = stableStringify(bodyValue ?? {});
-  const bodyHash = await sha256Hex(canonicalBody);
-
-  const pathname = new URL(url).pathname;
-  const message = `${ts}.${nonce}.${method.toUpperCase()}.${pathname}.${bodyHash}`;
-  const signature = await hmacSha256Hex(secret, message);
-
-  return {
-    "x-kairos-patch-ts": ts,
-    "x-kairos-patch-nonce": nonce,
-    "x-kairos-patch-body": bodyHash,
-    "x-kairos-patch-sig": signature,
-  };
 }
 
 async function jfetch(url: string, opts: RequestInit = {}) {
@@ -204,15 +79,6 @@ async function jfetch(url: string, opts: RequestInit = {}) {
     ...getAuthHeaders(),
     ...(opts.headers as any),
   };
-
-  if (isSensitivePatchRoute(url)) {
-    const signedHeaders = await buildSensitivePatchHeaders(
-      url,
-      method,
-      parsedBody ?? {}
-    );
-    Object.assign(headers, signedHeaders);
-  }
 
   const res = await fetch(url, {
     ...opts,
@@ -325,9 +191,9 @@ export const oraApi = {
   },
 
   async patchApply(id: string) {
-    return jfetch(`${getBaseUrl()}/api/ora/autoprog/apply/${id}`, {
+    return jfetch(`${getBaseUrl()}/api/kairos/autoprog/apply`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ id }),
     });
   },
 
@@ -340,79 +206,12 @@ export const oraApi = {
 
   // ✅ patchPublish corregida (no usa jfetch para evitar lanzar excepción en 504)
   async patchPublish(id: string) {
-    const res = await fetch(`${getBaseUrl()}/api/ora/autoprog/publish`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...getAuthHeaders(),
-      },
-      body: JSON.stringify({ id }),
-      cache: "no-store",
-    });
-    const text = await res.text();
-    let data: any = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { raw: text };
-    }
-    if (!res.ok) {
-      return {
-        ok: false,
-        error: data?.error || data?.message || `HTTP_${res.status}`,
-        status: res.status,
-        data,
-      };
-    }
-    return data;
-  },
-
-  async coherenceLog(limit = 100) {
-    const u = new URL(`${getBaseUrl()}/api/ora/coherencia/log`);
-    u.searchParams.set("limit", String(limit));
-    return jfetch(u.toString(), { method: "GET" });
-  },
-
-  async kairosCommand(text: string) {
-    return jfetch(`${getBaseUrl()}/api/ora/kairos/command`, {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    });
-  },
-
-  async createBranch(
-    name: string,
-    branchType = "general",
-    supervisor: OraModule = "rafael"
-  ) {
-    return jfetch(`${getBaseUrl()}/api/ora/autoprog/branch/create`, {
-      method: "POST",
-      body: JSON.stringify({
-        name,
-        type: branchType,
-        supervisor,
-      }),
-    });
-  },
-
-  async createClone(
-    displayName: string,
-    branchName: string,
-    supervisor: OraModule = "rafael"
-  ) {
-    return jfetch(`${getBaseUrl()}/api/ora/autoprog/clone/create`, {
-      method: "POST",
-      body: JSON.stringify({
-        displayName,
-        branchName,
-        supervisor,
-      }),
-    });
-  },
-
-  async autoprogSummary() {
-    return jfetch(`${getBaseUrl()}/api/ora/autoprog/summary`, {
-      method: "GET",
-    });
+    return jfetch(
+      `${getBaseUrl()}/api/kairos/autoprog/safe-publish`,
+      {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      }
+    );
   },
 };
