@@ -37,18 +37,6 @@ function getSealValue() {
   ).trim();
 }
 
-function getPatchSigValue() {
-  if (typeof window === "undefined") return "";
-
-  return String(
-    localStorage.getItem("KAIROS_PATCH_SIG") ||
-      localStorage.getItem("kairos_patch_sig") ||
-      sessionStorage.getItem("KAIROS_PATCH_SIG") ||
-      sessionStorage.getItem("kairos_patch_sig") ||
-      (process as any)?.env?.NEXT_PUBLIC_KAIROS_PATCH_SIG ||
-      ""
-  ).trim();
-}
 
 function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
@@ -56,10 +44,8 @@ function getAuthHeaders(): Record<string, string> {
   };
 
   const seal = getSealValue();
-  const patchSig = getPatchSigValue();
 
   if (seal) headers["x-kairos-seal"] = seal;
-  if (patchSig) headers["x-kairos-patch-sig"] = patchSig;
 
   return headers;
 }

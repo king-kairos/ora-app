@@ -26,27 +26,7 @@ const MODULES: OraModule[] = [
 
 type TabId = "war" | "essence" | "patches" | "control" | "builder";
 
-function maskSig(sig: string) {
-  if (!sig) return "";
-  const last4 = sig.slice(-4);
-  return "•".repeat(Math.max(12, Math.min(40, sig.length))) + last4;
-}
 
-function readStoredPatchSecret() {
-  if (typeof window === "undefined") return "";
-
-  return String(
-    localStorage.getItem("KAIROS_PATCH_SECRET") ||
-      localStorage.getItem("kairos_patch_secret") ||
-      sessionStorage.getItem("KAIROS_PATCH_SECRET") ||
-      sessionStorage.getItem("kairos_patch_secret") ||
-      localStorage.getItem("KAIROS_PATCH_SIG") ||
-      localStorage.getItem("kairos_patch_sig") ||
-      sessionStorage.getItem("KAIROS_PATCH_SIG") ||
-      sessionStorage.getItem("kairos_patch_sig") ||
-      ""
-  ).trim();
-}
 
 function readStoredKairosSeal() {
   if (typeof window === "undefined") return "";
@@ -82,10 +62,6 @@ export default function KairosPage() {
   const [mounted, setMounted] = useState(false);
   const [module, setModule] = useState<OraModule>("rafael");
 
-  const [sigInput, setSigInput] = useState("");
-  const [sigOk, setSigOk] = useState(false);
-  const [sigMask, setSigMask] = useState("");
-
   const [apiStatus, setApiStatus] = useState("...");
   const [sigTrace, setSigTrace] = useState("SIG_UNKNOWN");
 
@@ -115,10 +91,6 @@ export default function KairosPage() {
 
   useEffect(() => {
     setMounted(true);
-    const prev = readStoredPatchSecret();
-    setSigOk(!!prev);
-    setSigMask(maskSig(prev));
-    setSigInput("");
   }, []);
 
   async function refreshMetaOnly() {
@@ -213,49 +185,8 @@ export default function KairosPage() {
     return () => clearInterval(t);
   }, [mounted, tab, module]);
 
-  function onFirmar() {
-    if (!mounted) return;
-    const secret = (sigInput || "").trim();
-    if (!secret) return;
 
-    localStorage.setItem("KAIROS_PATCH_SECRET", secret);
-    localStorage.setItem("kairos_patch_secret", secret);
-    sessionStorage.setItem("KAIROS_PATCH_SECRET", secret);
-    sessionStorage.setItem("kairos_patch_secret", secret);
 
-    localStorage.setItem("KAIROS_PATCH_SIG", secret);
-    localStorage.setItem("kairos_patch_sig", secret);
-    sessionStorage.setItem("KAIROS_PATCH_SIG", secret);
-    sessionStorage.setItem("kairos_patch_sig", secret);
-
-    setSigOk(true);
-    setSigMask(maskSig(secret));
-    setSigInput("");
-  }
-
-  function onUsarFirmaGuardada() {
-    if (!mounted) return;
-    const prev = readStoredPatchSecret();
-    setSigInput(prev);
-  }
-
-  function onOlvidarFirma() {
-    if (!mounted) return;
-
-    localStorage.removeItem("KAIROS_PATCH_SECRET");
-    localStorage.removeItem("kairos_patch_secret");
-    sessionStorage.removeItem("KAIROS_PATCH_SECRET");
-    sessionStorage.removeItem("kairos_patch_secret");
-
-    localStorage.removeItem("KAIROS_PATCH_SIG");
-    localStorage.removeItem("kairos_patch_sig");
-    sessionStorage.removeItem("KAIROS_PATCH_SIG");
-    sessionStorage.removeItem("kairos_patch_sig");
-
-    setSigOk(false);
-    setSigMask("");
-    setSigInput("");
-  }
 
   async function onSendWar() {
     const text = warInput.trim();
@@ -552,9 +483,6 @@ export default function KairosPage() {
                   <b>ESENCIA ACTIVA:</b> {module.toUpperCase()}
                 </div>
                 <div>
-                  <b>PATCH SECRET:</b> {sigOk ? "activo" : "no cargado"}
-                </div>
-                <div>
                   <b>Pendientes:</b> {pendingCount}
                 </div>
                 <div>
@@ -609,106 +537,6 @@ export default function KairosPage() {
             background: "rgba(8,18,12,.72)",
           }}
         >
-          <div
-            style={{
-              border: "1px solid #00ff41",
-              padding: 10,
-              marginBottom: 14,
-              borderRadius: 12,
-              background: "#0b0b0b",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                alignItems: "center",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 260 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div
-                    style={{
-                      color: sigOk ? "#00ff41" : "#d4af37",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    {sigOk ? "🔒 FIRMADO (PATCH_SECRET activo)" : "🔓 NO FIRMADO"}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#8a8a8a" }}>
-                    Doble candado: SEAL del servidor + PATCH_SECRET del navegador.
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 8 }}>
-                  Firma guardada (máscara): <b>{sigMask || "—"}</b>
-                </div>
-              </div>
-
-              <input
-                type="password"
-                value={sigInput}
-                onChange={(e) => setSigInput(e.target.value)}
-                placeholder="Pega tu KAIROS_PATCH_SECRET aquí"
-                autoComplete="off"
-                spellCheck={false}
-                style={{
-                  width: 360,
-                  maxWidth: "100%",
-                  background: "#111",
-                  color: "#00ff41",
-                  border: "1px solid #222",
-                  padding: 8,
-                  borderRadius: 10,
-                }}
-              />
-
-              <button
-                onClick={onFirmar}
-                style={{
-                  background: "#d4af37",
-                  color: "#000",
-                  padding: "8px 14px",
-                  fontWeight: "bold",
-                  border: "none",
-                  borderRadius: 10,
-                }}
-              >
-                FIRMAR
-              </button>
-
-              <button
-                onClick={onOlvidarFirma}
-                style={{
-                  background: "transparent",
-                  color: "#00ff41",
-                  padding: "8px 14px",
-                  fontWeight: "bold",
-                  border: "1px solid #00ff41",
-                  borderRadius: 10,
-                }}
-              >
-                OLVIDAR
-              </button>
-
-              <button
-                onClick={onUsarFirmaGuardada}
-                style={{
-                  background: "transparent",
-                  color: "#d4af37",
-                  padding: "8px 14px",
-                  fontWeight: "bold",
-                  border: "1px solid #d4af37",
-                  borderRadius: 10,
-                }}
-              >
-                USAR GUARDADA
-              </button>
-            </div>
-          </div>
-
           <div
             style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}
           >
