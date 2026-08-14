@@ -136,70 +136,26 @@ export async function GET() {
   }
 }
 
-export async function POST(req: Request) {
-  try {
-    const body = await req.json().catch(() => ({}));
-
-    const rawIntent = String(
-      body?.intent || body?.text || body?.moduleName || body?.name || ""
-    ).trim();
-
-    if (!rawIntent) {
-      return NextResponse.json(
-        { ok: false, error: "EMPTY_INTENT" },
-        { status: 400 }
-      );
-    }
-
-    const modules = await readJsonArray(MODULE_REGISTRY_FILE);
-
-    const moduleName = deriveModuleNameFromIntent(rawIntent);
-    const branch = String(body?.branch || "").trim() || branchFromIntent(rawIntent);
-    const title =
-      String(body?.title || "").trim() || `ORA — ${humanTitleFromSlug(moduleName)}`;
-
-    const existing = modules.find(
-      (m: any) =>
-        String(m?.moduleName || "").toLowerCase() === moduleName.toLowerCase()
-    );
-
-    if (existing) {
-      return NextResponse.json({
-        ok: true,
-        created: false,
-        module: existing,
-        modules,
-        message: `El módulo ${existing.moduleName} ya existía.`,
-      });
-    }
-
-    const entry: ModuleRecord = {
-      id: `mod_${Date.now()}`,
-      moduleName,
-      title,
-      branch,
-      source: "kairos-builder",
-      status: "active",
-      createdAt: new Date().toISOString(),
-    };
-
-    const next = [entry, ...modules];
-    await writeJsonArray(MODULE_REGISTRY_FILE, next);
-
-    return NextResponse.json({
-      ok: true,
-      created: true,
-      module: entry,
-      modules: next,
-      message: `Módulo ${moduleName} registrado correctamente.`,
-    });
-  } catch (error: any) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error?.message || "MODULE_CREATE_FAIL",
-      },
-      { status: 500 }
-    );
-  }
+/**
+ * KAIROS_REGISTRY_READ_ONLY_GATE_V1
+ *
+ * Este endpoint conserva GET como lectura del registry materializado.
+ *
+ * POST ya NO puede materializar módulos.
+ * La creación debe pasar por el Core soberano:
+ *
+ * intención -> proposal -> aprobación -> apply canónico -> registry
+ */
+export async function POST(_req: Request) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "DIRECT_MODULE_REGISTRY_WRITE_DISABLED",
+      message:
+        "La creación directa de módulos por esta ruta fue deshabilitada. Usa el flujo soberano proposal-first de Kairos.",
+      executionMode: "proposal-first",
+      materializationAuthority: "canonical-apply",
+    },
+    { status: 409 }
+  );
 }

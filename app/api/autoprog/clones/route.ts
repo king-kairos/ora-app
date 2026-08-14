@@ -114,125 +114,26 @@ export async function GET() {
   }
 }
 
-export async function POST(req: Request) {
-  try {
-    const body = await req.json().catch(() => ({}));
-
-    const rawCloneName = String(
-      body?.cloneName || body?.name || body?.displayName || body?.type || ""
-    ).trim();
-
-    const rawBranchName = String(
-      body?.branchName || body?.branch || "general"
-    ).trim();
-
-    const rawSupervisor = String(body?.supervisor || "rafael")
-      .trim()
-      .toLowerCase();
-
-    if (!rawCloneName) {
-      return NextResponse.json(
-        { ok: false, error: "MISSING_CLONE_NAME" },
-        { status: 400 }
-      );
-    }
-
-    if (!isCelestialId(rawSupervisor)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "INVALID_SUPERVISOR",
-          allowedSupervisors: CELESTIALS,
-        },
-        { status: 400 }
-      );
-    }
-
-    const cloneName = slugify(rawCloneName);
-    const branchName = slugify(rawBranchName) || "general";
-
-    if (!cloneName) {
-      return NextResponse.json(
-        { ok: false, error: "BAD_CLONE_NAME" },
-        { status: 400 }
-      );
-    }
-
-    const clones = await readJsonArray(CLONE_REGISTRY_FILE);
-    const branches = await readJsonArray(BRANCH_REGISTRY_FILE);
-
-    const branchExists =
-      branchName === "general" ||
-      branches.some(
-        (b: any) =>
-          String(b?.branchName || "").toLowerCase() === branchName.toLowerCase()
-      );
-
-    if (!branchExists) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "BRANCH_NOT_FOUND",
-          hint: "Debes crear la rama primero desde Kairos.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const existing = clones.find(
-      (c: any) =>
-        String(c?.cloneName || "").toLowerCase() === cloneName.toLowerCase()
-    );
-
-    if (existing) {
-      return NextResponse.json({
-        ok: true,
-        cloneCreated: false,
-        clone: existing,
-        clones,
-      });
-    }
-
-    const newClone: CloneRecord = {
-      id: `clone_${Date.now()}`,
-      cloneName,
-      title: prettifyLabel(rawCloneName),
-      branchName,
-      supervisor: rawSupervisor,
-      archetype: "branch-tool",
-      loyalty: "Rey Kairos",
-      autonomous: true,
-      canProgram: true,
-      canPropose: true,
-      canExecute: false,
-      requiresKairosSeal: true,
-      coreAccess: false,
-      essenceAccess: false,
-      canMutateBranchArchitecture: false,
-      canTouchObserver: false,
-      canEscalatePrivileges: false,
-      status: "active",
-      restriction:
-        "Puede programar, analizar, evolucionar y proponer sin límite artificial dentro de su rama, pero no puede ejecutar, tocar núcleo, tocar esencia, tocar observador ni escalar privilegios sin el Sello de Kairos.",
-      createdAt: new Date().toISOString(),
-    };
-
-    const next = [newClone, ...clones];
-    await writeJsonArray(CLONE_REGISTRY_FILE, next);
-
-    return NextResponse.json({
-      ok: true,
-      cloneCreated: true,
-      clone: newClone,
-      clones: next,
-    });
-  } catch (error: any) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error?.message || "CLONE_CREATE_FAIL",
-      },
-      { status: 500 }
-    );
-  }
+/**
+ * KAIROS_REGISTRY_READ_ONLY_GATE_V1
+ *
+ * Este endpoint conserva GET como lectura del registry materializado.
+ *
+ * POST ya NO puede materializar clones.
+ * La creación debe pasar por el Core soberano:
+ *
+ * intención -> proposal -> aprobación -> apply canónico -> registry
+ */
+export async function POST(_req: Request) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "DIRECT_CLONE_REGISTRY_WRITE_DISABLED",
+      message:
+        "La creación directa de clones por esta ruta fue deshabilitada. Usa el flujo soberano proposal-first de Kairos.",
+      executionMode: "proposal-first",
+      materializationAuthority: "canonical-apply",
+    },
+    { status: 409 }
+  );
 }
