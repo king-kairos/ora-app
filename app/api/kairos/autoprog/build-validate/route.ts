@@ -2,6 +2,8 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
+import fs from "fs";
+import path from "path";
 import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
 
 function run(cmd: string) {
@@ -36,18 +38,68 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await run("npm run build");
+    const body = await req.json().catch(() => ({}));
+    const proposalId = String(body?.proposalId || "").trim() || null;
+    const branch = String(body?.branch || "").trim() || null;
+
+    const buildDirName = ".next-build-validate";
+    const buildDir = path.join(process.cwd(), buildDirName);
+    const lockDir = path.join(
+      process.cwd(),
+      ".next-build-validate.lock"
+    );
+
+    try {
+      fs.mkdirSync(lockDir);
+    } catch (error: any) {
+      if (error?.code === "EEXIST") {
+        return NextResponse.json(
+          {
+            ok: false,
+            mode: "BUILD_VALIDATION_ENGINE",
+            canPublish: false,
+            buildPassed: false,
+            error: "BUILD_VALIDATION_ALREADY_RUNNING",
+          },
+          { status: 409 }
+        );
+      }
+
+      throw error;
+    }
+
+    let result;
+
+    try {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+
+      result = await run(
+        `NEXT_DIST_DIR=${buildDirName} npm run build`
+      );
+    } finally {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    }
+
+    const buildIdPresent =
+      result.ok &&
+      fs.existsSync(path.join(buildDir, "BUILD_ID"));
+
+    const buildPassed = result.ok && buildIdPresent;
 
     return NextResponse.json({
-      ok: result.ok,
+      ok: buildPassed,
       mode: "BUILD_VALIDATION_ENGINE",
-      canPublish: result.ok,
-      buildPassed: result.ok,
+      canPublish: buildPassed,
+      buildPassed,
+      isolatedBuild: true,
+      buildIdPresent,
+      proposalId,
+      branch,
       stdout: result.stdout.slice(-8000),
       stderr: result.stderr.slice(-8000),
-      message: result.ok
-        ? "Build validado correctamente. Puede continuar a publish."
-        : "Build falló. No publicar. Se requiere AutoFix o corrección manual.",
+      message: buildPassed
+        ? "Build aislado validado correctamente. Puede continuar a publish."
+        : "Build aislado falló o no generó BUILD_ID. No publicar.",
     });
   } catch (error: any) {
     return NextResponse.json(
