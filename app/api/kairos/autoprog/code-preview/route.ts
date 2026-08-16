@@ -43,27 +43,33 @@ export async function POST(req: Request) {
     );
 
     const usesLegacyNote = files.some((f: any) => String(f?.mode || "") === "note");
+    const alreadyMaterialized = parsedPatch?.alreadyMaterialized === true;
 
     return NextResponse.json({
       ok: true,
-      mode: hasOperations
-        ? "AUTO_PROGRAMMING_STRUCTURED_PATCH_PREVIEW"
-        : "AUTO_PROGRAMMING_PATCH_FORMAT_REQUIRED",
+      mode: alreadyMaterialized
+        ? "AUTO_PROGRAMMING_ALREADY_MATERIALIZED_NOOP"
+        : hasOperations
+          ? "AUTO_PROGRAMMING_STRUCTURED_PATCH_PREVIEW"
+          : "AUTO_PROGRAMMING_PATCH_FORMAT_REQUIRED",
       plan,
       target,
       proposedBy: plan.proposedBy,
       risk: plan.risk,
       content,
       parsedPatch,
-      patchFormatOk: hasOperations && !usesLegacyNote,
+      patchFormatOk: alreadyMaterialized || (hasOperations && !usesLegacyNote),
       hasOperations,
       usesLegacyNote,
-      requiresApproval: true,
+      alreadyMaterialized,
+      requiresApproval: alreadyMaterialized ? false : true,
       canExecute: false,
       sealRequired: true,
-      message: hasOperations
-        ? "Preview de patch estructurado generado. No se aplicó ningún cambio."
-        : "El preview todavía no contiene files[].operations[]. No se puede aplicar.",
+      message: alreadyMaterialized
+        ? "La intención ya está materializada. No se genera ninguna mutación."
+        : hasOperations
+          ? "Preview de patch estructurado generado. No se aplicó ningún cambio."
+          : "El preview todavía no contiene files[].operations[]. No se puede aplicar.",
       createdAt: new Date().toISOString(),
     });
   } catch (error: any) {

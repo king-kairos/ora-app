@@ -411,6 +411,26 @@ export function generateAutoprogContent(input: {
         normalizeText(intent).includes("card")
       )
     ) {
+      const currentTargetPath = path.resolve(process.cwd(), target);
+      const currentTargetContent = fs.existsSync(currentTargetPath)
+        ? fs.readFileSync(currentTargetPath, "utf8")
+        : "";
+
+      if (currentTargetContent.includes("ORA_STATUS_CARD_V1")) {
+        return JSON.stringify({
+          title: "Estado del Sistema ya materializado",
+          summary:
+            "La tarjeta Estado del Sistema ya existe en ORA Security. No se genera una nueva mutación.",
+          files: [],
+          alreadyMaterialized: true,
+          requiresApproval: false,
+          sealRequired: true,
+          canExecute: false,
+          branch,
+          proposedBy
+        }, null, 2);
+      }
+
       const find =
         '          ))}\n        </div>\n      </section>';
 
@@ -542,5 +562,18 @@ export function generateAutoprogFiles(input: {
       path: file,
       content: generated,
     };
+  });
+}
+
+export function isAutoprogAlreadyMaterialized(input: {
+  intent: string; targetFiles: string[]; proposedBy: string; risk: string; branch?: string | null;
+}) {
+  return input.targetFiles.length > 0 && input.targetFiles.every((file) => {
+    const generated = generateAutoprogContent({ ...input, target: file });
+    try {
+      return JSON.parse(generated)?.alreadyMaterialized === true;
+    } catch {
+      return false;
+    }
   });
 }

@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { generateProposalPlan } from "../../../../../src/ai/orchestrator/proposalGenerationEngine";
 import { createProposal } from "../../../../../src/ai/autoprog/patchStore";
-import { generateAutoprogFiles } from "../../../../../src/ai/autoprog/contentGenerator";
+import { generateAutoprogFiles, isAutoprogAlreadyMaterialized } from "../../../../../src/ai/autoprog/contentGenerator";
 
 function clean(value: unknown) {
   return String(value || "").trim();
@@ -32,6 +32,28 @@ export async function POST(req: Request) {
       branch,
       targetFiles,
     });
+
+    const alreadyMaterialized = isAutoprogAlreadyMaterialized({
+      intent,
+      targetFiles: plan.targetFiles,
+      proposedBy: plan.proposedBy,
+      risk: plan.risk,
+      branch,
+    });
+
+    if (alreadyMaterialized) {
+      return NextResponse.json({
+        ok: true,
+        mode: "AUTO_PROGRAMMING_ALREADY_MATERIALIZED_NOOP",
+        proposalCreated: false,
+        alreadyMaterialized: true,
+        requiresApproval: false,
+        canExecute: false,
+        message:
+          "La intención ya está materializada. No se creó ninguna proposal.",
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     const files =
       plan.targetFiles.length > 0

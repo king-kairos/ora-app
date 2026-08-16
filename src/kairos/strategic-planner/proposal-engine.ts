@@ -1,5 +1,5 @@
 import { createProposal } from "@/ai/autoprog/patchStore";
-import { generateAutoprogFiles } from "@/ai/autoprog/contentGenerator";
+import { generateAutoprogFiles, isAutoprogAlreadyMaterialized } from "@/ai/autoprog/contentGenerator";
 
 import {
   readStrategicPlan,
@@ -186,18 +186,59 @@ export async function generateReadyTaskProposals(
     );
 
   if (readyTask) {
-    const proposal: any =
-      await createProposalForTask(plan, readyTask);
+    const taskIntent = proposalIntent(plan, readyTask);
 
-    const proposalId = clean(proposal?.id);
+    const alreadyMaterialized = isAutoprogAlreadyMaterialized({
+      intent: taskIntent,
+      targetFiles: readyTask.targets,
+      proposedBy: readyTask.proposedBy || plan.leader,
+      risk: readyTask.risk,
+      branch: plan.branch,
+    });
 
-    if (!proposalId) {
-      throw new Error(
-        `PROPOSAL_ID_MISSING:${readyTask.id}`
-      );
-    }
+    if (alreadyMaterialized) {
+      plan = refreshStrategicTaskReadiness({
+        ...plan,
+        tasks: plan.tasks.map((task) =>
+          task.id === readyTask.id
+            ? {
+                ...task,
+                status: "completed",
+                proposalId: null,
+              }
+            : task
+        ),
+        history: [
+          ...plan.history,
+          {
+            status: "proposal-generation",
+            timestamp: new Date().toISOString(),
+            message:
+              `La tarea ${readyTask.id} ya estaba materializada. ` +
+              `No se creó Proposal y la tarea fue marcada como completada.`,
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      });
 
-    plan = {
+      skipped.push({
+        taskId: readyTask.id,
+        reason:
+          "La intención ya estaba materializada. No fue necesario crear Proposal.",
+      });
+    } else {
+      const proposal: any =
+        await createProposalForTask(plan, readyTask);
+
+      const proposalId = clean(proposal?.id);
+
+      if (!proposalId) {
+        throw new Error(
+          `PROPOSAL_ID_MISSING:${readyTask.id}`
+        );
+      }
+
+      plan = {
       ...plan,
       status: "awaiting-approval",
       tasks: plan.tasks.map((task) =>
@@ -220,13 +261,14 @@ export async function generateReadyTaskProposals(
         },
       ],
       updatedAt: new Date().toISOString(),
-    };
+      };
 
-    created.push({
-      taskId: readyTask.id,
-      proposalId,
-      duplicate: proposal?.duplicate === true,
-    });
+      created.push({
+        taskId: readyTask.id,
+        proposalId,
+        duplicate: proposal?.duplicate === true,
+      });
+    }
   } else {
     for (const task of plan.tasks) {
       if (task.proposalId) {
