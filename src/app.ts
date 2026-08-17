@@ -8625,6 +8625,18 @@ app.post(
         req.body?.branch ||
         null,
 
+      artifactId:
+        req.body?.artifactId ||
+        null,
+
+      buildId:
+        req.body?.buildId ||
+        null,
+
+      artifactDigest:
+        req.body?.artifactDigest ||
+        null,
+
       source:
         req.body?.source ||
         "core-system-deploy",

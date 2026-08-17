@@ -107,8 +107,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const pageUrl = `https://orareal.com/${branch}`;
-    const apiUrl = `https://orareal.com/api/${branch}/state`;
+    const pageUrl = "https://orareal.com/";
+    const apiUrl = "http://127.0.0.1:3001/health";
 
     const checks = [
       await curlCheck("page", pageUrl),

@@ -4,7 +4,91 @@ import { NextResponse } from "next/server";
 import { exec } from "child_process";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { authorizeKairosExecution } from "../../../../../src/security/kairosExecutionGate";
+
+function computeArtifactDigest(
+  rootDir: string
+): string {
+  const hash =
+    crypto.createHash("sha256");
+
+  function walk(
+    currentDir: string
+  ) {
+    const entries =
+      fs.readdirSync(
+        currentDir,
+        {
+          withFileTypes: true,
+        }
+      ).sort(
+        (a, b) =>
+          a.name === b.name
+            ? 0
+            : a.name < b.name
+              ? -1
+              : 1
+      );
+
+    for (const entry of entries) {
+      const fullPath =
+        path.join(
+          currentDir,
+          entry.name
+        );
+
+      const relativePath =
+        path
+          .relative(
+            rootDir,
+            fullPath
+          )
+          .split(path.sep)
+          .join("/");
+
+      if (
+        relativePath ===
+        ".ora-validated-artifact.json"
+      ) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+
+      if (entry.isSymbolicLink()) {
+        hash.update(
+          `L:${relativePath}\0`,
+          "utf8"
+        );
+        hash.update(
+          fs.readlinkSync(fullPath),
+          "utf8"
+        );
+        hash.update("\0");
+        continue;
+      }
+
+      if (entry.isFile()) {
+        hash.update(
+          `F:${relativePath}\0`,
+          "utf8"
+        );
+        hash.update(
+          fs.readFileSync(fullPath)
+        );
+        hash.update("\0");
+      }
+    }
+  }
+
+  walk(rootDir);
+
+  return hash.digest("hex");
+}
 
 function run(cmd: string) {
   return new Promise<{ ok: boolean; stdout: string; stderr: string }>((resolve) => {
@@ -69,6 +153,11 @@ export async function POST(req: Request) {
     }
 
     let result;
+    let buildIdPresent = false;
+    let buildPassed = false;
+    let buildId: string | null = null;
+    let artifactId: string | null = null;
+    let artifactDigest: string | null = null;
 
     try {
       fs.rmSync(buildDir, { recursive: true, force: true });
@@ -76,15 +165,78 @@ export async function POST(req: Request) {
       result = await run(
         `NEXT_DIST_DIR=${buildDirName} npm run build`
       );
+
+      buildIdPresent =
+        result.ok &&
+        fs.existsSync(path.join(buildDir, "BUILD_ID"));
+
+      buildPassed =
+        result.ok && buildIdPresent;
+
+      buildId = buildPassed
+        ? fs.readFileSync(
+            path.join(buildDir, "BUILD_ID"),
+            "utf8"
+          ).trim()
+        : null;
+
+      artifactId = buildPassed
+        ? `validated-${Date.now()}-${crypto
+            .randomBytes(6)
+            .toString("hex")}`
+        : null;
+
+      if (buildPassed && buildId && artifactId) {
+        artifactDigest =
+          computeArtifactDigest(
+            buildDir
+          );
+
+        const validatedRoot =
+          path.join(process.cwd(), ".next-validated");
+
+        const artifactDir =
+          path.join(validatedRoot, artifactId);
+
+        fs.mkdirSync(validatedRoot, {
+          recursive: true,
+        });
+
+        if (fs.existsSync(artifactDir)) {
+          throw new Error(
+            "VALIDATED_ARTIFACT_ID_COLLISION"
+          );
+        }
+
+        fs.writeFileSync(
+          path.join(
+            buildDir,
+            ".ora-validated-artifact.json"
+          ),
+          JSON.stringify(
+            {
+              artifactId,
+              buildId,
+              artifactDigest,
+              proposalId,
+              branch,
+              createdAt:
+                new Date().toISOString(),
+            },
+            null,
+            2
+          ),
+          "utf8"
+        );
+
+        fs.renameSync(
+          buildDir,
+          artifactDir
+        );
+      }
     } finally {
       fs.rmSync(lockDir, { recursive: true, force: true });
     }
-
-    const buildIdPresent =
-      result.ok &&
-      fs.existsSync(path.join(buildDir, "BUILD_ID"));
-
-    const buildPassed = result.ok && buildIdPresent;
 
     return NextResponse.json({
       ok: buildPassed,
@@ -93,6 +245,9 @@ export async function POST(req: Request) {
       buildPassed,
       isolatedBuild: true,
       buildIdPresent,
+      buildId,
+      artifactId,
+      artifactDigest,
       proposalId,
       branch,
       stdout: result.stdout.slice(-8000),

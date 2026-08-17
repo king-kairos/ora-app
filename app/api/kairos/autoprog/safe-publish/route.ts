@@ -424,6 +424,44 @@ export async function POST(
       );
     }
 
+    const validatedArtifactId =
+      String(
+        validate?.artifactId || ""
+      ).trim();
+
+    const validatedBuildId =
+      String(
+        validate?.buildId || ""
+      ).trim();
+
+    const validatedArtifactDigest =
+      String(
+        validate?.artifactDigest || ""
+      ).trim();
+
+    if (
+      !validatedArtifactId ||
+      !validatedBuildId ||
+      !validatedArtifactDigest
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "SAFE_PUBLISH_VALIDATED_ARTIFACT_IDENTITY_MISSING",
+          proposalId,
+          branch,
+          build:
+            validate,
+          message:
+            "El build pasó, pero falta la identidad del artefacto validado. Deploy bloqueado.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
     /*
      * 3. Solicitar full deploy soberano.
      *
@@ -446,6 +484,12 @@ export async function POST(
             JSON.stringify({
               proposalId,
               branch,
+              artifactId:
+                validatedArtifactId,
+              buildId:
+                validatedBuildId,
+              artifactDigest:
+                validatedArtifactDigest,
               source:
                 "safe-publish-automatic",
             }),

@@ -91,3 +91,5 @@ store_icon.png
 **/*.rej
 ops/audit_log.jsonl
 ops/ops.log.json
+
+.next-validated/
