@@ -262,6 +262,11 @@ function verifyValidatedArtifact(
       state?.artifactDigest || ""
     ).trim();
 
+  const expectedRollbackCheckpointId =
+    String(
+      state?.rollbackCheckpointId || ""
+    ).trim();
+
   if (
     !/^validated-\d+-[a-f0-9]{12}$/.test(
       artifactId
@@ -269,6 +274,9 @@ function verifyValidatedArtifact(
     !expectedBuildId ||
     !/^[a-f0-9]{64}$/.test(
       expectedArtifactDigest
+    ) ||
+    !/^checkpoint-\d+-[a-f0-9]{12}$/.test(
+      expectedRollbackCheckpointId
     )
   ) {
     return {
@@ -347,7 +355,12 @@ function verifyValidatedArtifact(
       (metadata?.branch ||
         null) ===
         (state?.branch ||
-          null);
+          null) &&
+      String(
+        metadata?.rollbackCheckpointId ||
+        ""
+      ).trim() ===
+        expectedRollbackCheckpointId;
 
     if (!identityMatches) {
       return {

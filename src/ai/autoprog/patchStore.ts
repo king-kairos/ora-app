@@ -106,11 +106,31 @@ async function readDb(): Promise<Proposal[]> {
 }
 
 async function writeDb(items: Proposal[]) {
-  await fs.mkdir(path.dirname(DB_FILE), { recursive: true }).catch(() => {});
+  await fs.mkdir(
+    path.dirname(DB_FILE),
+    {
+      recursive: true,
+    }
+  );
+
+  const temporary =
+    `${DB_FILE}.${process.pid}.tmp`;
+
   await fs.writeFile(
-    DB_FILE,
-    JSON.stringify({ proposals: items }, null, 2),
+    temporary,
+    JSON.stringify(
+      {
+        proposals: items,
+      },
+      null,
+      2
+    ),
     "utf8"
+  );
+
+  await fs.rename(
+    temporary,
+    DB_FILE
   );
 }
 
@@ -532,6 +552,112 @@ export async function setStatus(
         "utf8"
       );
     }
+  }
+
+  return proposal;
+}
+
+export async function patchProposalMetadata(
+  id: string,
+  metadataPatch: Record<string, any>
+) {
+  const cleanId =
+    String(id || "")
+      .trim()
+      .replace(/\.json$/i, "");
+
+  if (!cleanId) return null;
+
+  if (
+    !metadataPatch ||
+    typeof metadataPatch !== "object"
+  ) {
+    throw new Error(
+      "PROPOSAL_METADATA_PATCH_INVALID"
+    );
+  }
+
+  const db = await readDb();
+
+  let proposal:
+    | Proposal
+    | null
+    | undefined =
+    db.find(
+      (item) =>
+        item.id === cleanId
+    );
+
+  const fromLooseFile =
+    !proposal;
+
+  if (!proposal) {
+    proposal =
+      await getProposal(
+        cleanId
+      );
+  }
+
+  if (!proposal) return null;
+
+  proposal.metadata =
+    normalizeMetadata({
+      ...(proposal.metadata || {}),
+      ...metadataPatch,
+    });
+
+  proposal.updatedAt =
+    Date.now();
+
+  if (fromLooseFile) {
+    await fs.mkdir(
+      PROPOSALS_DIR,
+      {
+        recursive: true,
+      }
+    );
+
+    const target =
+      path.join(
+        PROPOSALS_DIR,
+        `${proposal.id}.json`
+      );
+
+    const temporary =
+      `${target}.${process.pid}.tmp`;
+
+    await fs.writeFile(
+      temporary,
+      JSON.stringify(
+        proposal,
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await fs.rename(
+      temporary,
+      target
+    );
+  } else {
+    const index =
+      db.findIndex(
+        (item) =>
+          item.id ===
+          proposal!.id
+      );
+
+    if (index === -1) {
+      throw new Error(
+        "PROPOSAL_METADATA_PATCH_STORE_INDEX_MISSING"
+      );
+    }
+
+    db[index] =
+      proposal;
+
+    await writeDb(db);
   }
 
   return proposal;

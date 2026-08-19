@@ -20,6 +20,7 @@ import {
   getProposal as getProposalStore,
   setStatus as setStatusStore,
   archiveProposal as archiveProposalStore,
+  patchProposalMetadata,
 } from "./ai/autoprog/patchStore";
 
 import { requireKairosPatchSig } from "./ai/security/kairosPatchSig";
@@ -166,6 +167,10 @@ const AUTOPROG_HISTORY_DIR = path.join(DATA_DIR, "autoprog");
 const AUTOPROG_HISTORY_FILE = path.join(AUTOPROG_HISTORY_DIR, "history.jsonl");
 
 const ORA_DATA_DIR = path.join(PROJECT_ROOT, "ora-data");
+const DEPLOY_CHECKPOINT_DIR = path.join(
+  ORA_DATA_DIR,
+  "deploy-checkpoints"
+);
 const MODULE_REGISTRY_FILE = path.join(ORA_DATA_DIR, "module-registry.json");
 const CLONE_REGISTRY_FILE = path.join(ORA_DATA_DIR, "clone-registry.json");
 const BRANCH_REGISTRY_FILE = path.join(ORA_DATA_DIR, "branch-registry.json");
@@ -673,9 +678,34 @@ async function readJsonArrayFile(filePath: string) {
   }
 }
 
-async function writeJsonArrayFile(filePath: string, value: any[]) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true }).catch(() => {});
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
+async function writeJsonArrayFile(
+  filePath: string,
+  value: any[]
+) {
+  await fs.mkdir(
+    path.dirname(filePath),
+    {
+      recursive: true,
+    }
+  );
+
+  const temporary =
+    `${filePath}.${process.pid}.tmp`;
+
+  await fs.writeFile(
+    temporary,
+    JSON.stringify(
+      value,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  await fs.rename(
+    temporary,
+    filePath
+  );
 }
 
 async function readJsonFilesFromDir(dirPath: string) {
@@ -708,8 +738,714 @@ async function readJsonFilesFromDir(dirPath: string) {
 }
 
 async function writeJsonFile(filePath: string, value: any) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true }).catch(() => {});
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
+  await fs.mkdir(
+    path.dirname(filePath),
+    {
+      recursive: true,
+    }
+  );
+
+  const temporary =
+    `${filePath}.${process.pid}.tmp`;
+
+  await fs.writeFile(
+    temporary,
+    JSON.stringify(
+      value,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  await fs.rename(
+    temporary,
+    filePath
+  );
+}
+
+function createDeployCheckpointId() {
+  return `checkpoint-${Date.now()}-${crypto
+    .randomBytes(6)
+    .toString("hex")}`;
+}
+
+function validDeployCheckpointId(
+  checkpointId: string
+) {
+  return /^checkpoint-\d+-[a-f0-9]{12}$/.test(
+    checkpointId
+  );
+}
+
+function deployCheckpointPath(
+  checkpointId: string
+) {
+  if (
+    !validDeployCheckpointId(
+      checkpointId
+    )
+  ) {
+    throw new Error(
+      "INVALID_DEPLOY_CHECKPOINT_ID"
+    );
+  }
+
+  return path.join(
+    DEPLOY_CHECKPOINT_DIR,
+    checkpointId
+  );
+}
+
+function resolveDeployCheckpointTarget(
+  relativePath: string
+) {
+  const normalized =
+    path.posix
+      .normalize(
+        String(
+          relativePath || ""
+        )
+          .trim()
+          .replace(/\\/g, "/")
+      )
+      .replace(/^\/+/, "");
+
+  if (
+    !normalized ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    normalized.includes("/../")
+  ) {
+    throw new Error(
+      "INVALID_DEPLOY_CHECKPOINT_TARGET"
+    );
+  }
+
+  const absolute =
+    path.resolve(
+      PROJECT_ROOT,
+      normalized
+    );
+
+  const root =
+    path.resolve(
+      PROJECT_ROOT
+    );
+
+  if (
+    absolute !== root &&
+    !absolute.startsWith(
+      root + path.sep
+    )
+  ) {
+    throw new Error(
+      "DEPLOY_CHECKPOINT_TARGET_OUTSIDE_ROOT"
+    );
+  }
+
+  return {
+    relative:
+      normalized,
+    absolute,
+  };
+}
+
+function captureDeployCheckpointFiles(
+  checkpointId: string,
+  relativePaths: string[]
+) {
+  const checkpointDir =
+    deployCheckpointPath(
+      checkpointId
+    );
+
+  const filesDir =
+    path.join(
+      checkpointDir,
+      "files"
+    );
+
+  fsSync.mkdirSync(
+    filesDir,
+    {
+      recursive: true,
+    }
+  );
+
+  const uniquePaths =
+    Array.from(
+      new Set(
+        relativePaths
+          .map((value) =>
+            String(
+              value || ""
+            ).trim()
+          )
+          .filter(Boolean)
+      )
+    );
+
+  const entries =
+    [];
+
+  for (const relativePath of uniquePaths) {
+    const target =
+      resolveDeployCheckpointTarget(
+        relativePath
+      );
+
+    const exists =
+      fsSync.existsSync(
+        target.absolute
+      );
+
+    const backupName =
+      crypto
+        .createHash("sha256")
+        .update(
+          target.relative
+        )
+        .digest("hex");
+
+    const backupFile =
+      path.join(
+        filesDir,
+        backupName
+      );
+
+    let backupSha256: string | null = null;
+
+    if (exists) {
+      const stat =
+        fsSync.lstatSync(
+          target.absolute
+        );
+
+      if (
+        stat.isSymbolicLink() ||
+        !stat.isFile()
+      ) {
+        throw new Error(
+          `DEPLOY_CHECKPOINT_TARGET_NOT_REGULAR_FILE:${target.relative}`
+        );
+      }
+
+      fsSync.copyFileSync(
+        target.absolute,
+        backupFile
+      );
+
+      backupSha256 =
+        crypto
+          .createHash("sha256")
+          .update(
+            fsSync.readFileSync(
+              backupFile
+            )
+          )
+          .digest("hex");
+    }
+
+    entries.push({
+      path:
+        target.relative,
+      existed:
+        exists,
+      backupFile:
+        exists
+          ? path.relative(
+              checkpointDir,
+              backupFile
+            )
+          : null,
+      backupSha256,
+    });
+  }
+
+  return entries;
+}
+
+function captureDeployCheckpointRegistries(
+  checkpointId: string
+) {
+  const registryPaths = [
+    path.relative(
+      PROJECT_ROOT,
+      MODULE_REGISTRY_FILE
+    ),
+    path.relative(
+      PROJECT_ROOT,
+      BRANCH_REGISTRY_FILE
+    ),
+    path.relative(
+      PROJECT_ROOT,
+      CLONE_REGISTRY_FILE
+    ),
+  ];
+
+  return captureDeployCheckpointFiles(
+    checkpointId,
+    registryPaths
+  );
+}
+
+function writeDeployCheckpointManifest(
+  checkpointId: string,
+  manifest: Record<string, unknown>
+) {
+  const checkpointDir =
+    deployCheckpointPath(
+      checkpointId
+    );
+
+  fsSync.mkdirSync(
+    checkpointDir,
+    {
+      recursive: true,
+    }
+  );
+
+  const target =
+    path.join(
+      checkpointDir,
+      "manifest.json"
+    );
+
+  const temporary =
+    `${target}.${process.pid}.tmp`;
+
+  fsSync.writeFileSync(
+    temporary,
+    JSON.stringify(
+      manifest,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  fsSync.renameSync(
+    temporary,
+    target
+  );
+}
+
+function readDeployCheckpointManifest(
+  checkpointId: string
+) {
+  const checkpointDir =
+    deployCheckpointPath(
+      checkpointId
+    );
+
+  const manifestFile =
+    path.join(
+      checkpointDir,
+      "manifest.json"
+    );
+
+  if (
+    !fsSync.existsSync(
+      manifestFile
+    )
+  ) {
+    throw new Error(
+      "DEPLOY_CHECKPOINT_MANIFEST_MISSING"
+    );
+  }
+
+  try {
+    const manifest =
+      JSON.parse(
+        fsSync.readFileSync(
+          manifestFile,
+          "utf8"
+        )
+      );
+
+    if (
+      manifest?.checkpointId !==
+        checkpointId ||
+      manifest?.phase !==
+        "pre_apply" ||
+      !Array.isArray(
+        manifest?.files
+      ) ||
+      !Array.isArray(
+        manifest?.registries
+      )
+    ) {
+      throw new Error(
+        "DEPLOY_CHECKPOINT_MANIFEST_INVALID"
+      );
+    }
+
+    return manifest;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message ===
+        "DEPLOY_CHECKPOINT_MANIFEST_INVALID"
+    ) {
+      throw error;
+    }
+
+    throw new Error(
+      "DEPLOY_CHECKPOINT_MANIFEST_INVALID"
+    );
+  }
+}
+
+function restoreDeployCheckpointEntries(
+  checkpointId: string,
+  entries: any[]
+) {
+  const checkpointDir =
+    deployCheckpointPath(
+      checkpointId
+    );
+
+  const checkpointRoot =
+    path.resolve(
+      checkpointDir
+    );
+
+  /*
+   * T41_RESTORE_VALIDATE_BEFORE_MUTATE_V1
+   *
+   * Ninguna restauración comienza hasta que TODAS
+   * las entradas hayan sido validadas.
+   */
+  const validated: any[] = [];
+  const seenPaths =
+    new Set<string>();
+
+  for (const entry of entries) {
+    const target =
+      resolveDeployCheckpointTarget(
+        String(
+          entry?.path || ""
+        )
+      );
+
+    if (
+      seenPaths.has(
+        target.relative
+      )
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_DUPLICATE_PATH:${target.relative}`
+      );
+    }
+
+    seenPaths.add(
+      target.relative
+    );
+
+    if (
+      typeof entry?.existed !==
+      "boolean"
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_ENTRY_EXISTED_INVALID:${target.relative}`
+      );
+    }
+
+    if (
+      fsSync.existsSync(
+        target.absolute
+      )
+    ) {
+      const currentStat =
+        fsSync.lstatSync(
+          target.absolute
+        );
+
+      if (
+        currentStat.isSymbolicLink() ||
+        !currentStat.isFile()
+      ) {
+        throw new Error(
+          `DEPLOY_CHECKPOINT_RESTORE_TARGET_NOT_REGULAR_FILE:${target.relative}`
+        );
+      }
+    }
+
+    if (entry.existed === false) {
+      if (
+        entry?.backupFile !== null ||
+        entry?.backupSha256 !== null
+      ) {
+        throw new Error(
+          `DEPLOY_CHECKPOINT_ABSENT_ENTRY_INVALID:${target.relative}`
+        );
+      }
+
+      validated.push({
+        target,
+        existedBefore: false,
+        backupAbsolute: null,
+      });
+
+      continue;
+    }
+
+    const backupRelative =
+      String(
+        entry?.backupFile || ""
+      ).trim();
+
+    const expectedSha256 =
+      String(
+        entry?.backupSha256 || ""
+      )
+        .trim()
+        .toLowerCase();
+
+    if (
+      !backupRelative ||
+      !/^[a-f0-9]{64}$/.test(
+        expectedSha256
+      )
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_BACKUP_IDENTITY_INVALID:${target.relative}`
+      );
+    }
+
+    const backupAbsolute =
+      path.resolve(
+        checkpointRoot,
+        backupRelative
+      );
+
+    if (
+      backupAbsolute ===
+        checkpointRoot ||
+      !backupAbsolute.startsWith(
+        checkpointRoot +
+          path.sep
+      )
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_BACKUP_OUTSIDE_CHECKPOINT:${target.relative}`
+      );
+    }
+
+    if (
+      !fsSync.existsSync(
+        backupAbsolute
+      )
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_BACKUP_MISSING:${target.relative}`
+      );
+    }
+
+    const backupStat =
+      fsSync.lstatSync(
+        backupAbsolute
+      );
+
+    if (
+      backupStat.isSymbolicLink() ||
+      !backupStat.isFile()
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_BACKUP_NOT_REGULAR_FILE:${target.relative}`
+      );
+    }
+
+    const actualSha256 =
+      crypto
+        .createHash("sha256")
+        .update(
+          fsSync.readFileSync(
+            backupAbsolute
+          )
+        )
+        .digest("hex");
+
+    if (
+      actualSha256 !==
+      expectedSha256
+    ) {
+      throw new Error(
+        `DEPLOY_CHECKPOINT_BACKUP_SHA256_MISMATCH:${target.relative}`
+      );
+    }
+
+    validated.push({
+      target,
+      existedBefore: true,
+      backupAbsolute,
+    });
+  }
+
+  /*
+   * Solo después de validar TODAS las entradas
+   * comienza la mutación real.
+   */
+  const restored: any[] = [];
+
+  for (const item of validated) {
+    if (!item.existedBefore) {
+      if (
+        fsSync.existsSync(
+          item.target.absolute
+        )
+      ) {
+        fsSync.unlinkSync(
+          item.target.absolute
+        );
+      }
+
+      restored.push({
+        path:
+          item.target.relative,
+        action:
+          "removed_created_file",
+      });
+
+      continue;
+    }
+
+    fsSync.mkdirSync(
+      path.dirname(
+        item.target.absolute
+      ),
+      {
+        recursive: true,
+      }
+    );
+
+    fsSync.copyFileSync(
+      item.backupAbsolute,
+      item.target.absolute
+    );
+
+    restored.push({
+      path:
+        item.target.relative,
+      action:
+        "restored_previous_file",
+    });
+  }
+
+  return restored;
+}
+
+function restoreDeployCheckpoint(
+  checkpointId: string
+) {
+  const manifest =
+    readDeployCheckpointManifest(
+      checkpointId
+    );
+
+  const entries =
+    [
+      ...manifest.files,
+      ...manifest.registries,
+    ];
+
+  const restored =
+    restoreDeployCheckpointEntries(
+      checkpointId,
+      entries
+    );
+
+  return {
+    ok: true,
+    checkpointId,
+    proposalId:
+      manifest.proposalId ||
+      null,
+    restored,
+  };
+}
+
+async function compensateApplyPersistenceFailure(
+  id: string,
+  rollbackCheckpointId: string,
+  failureReason: string
+) {
+  const recovery =
+    restoreDeployCheckpoint(
+      rollbackCheckpointId
+    );
+
+  const compensatedAt =
+    new Date().toISOString();
+
+  const patchedStore =
+    await patchProposalMetadata(
+      id,
+      {
+        rollback_compensated: true,
+        rollback_checkpoint_id:
+          rollbackCheckpointId,
+        rollback_reason:
+          failureReason,
+        rollback_scope:
+          "apply_persistence",
+        rollback_compensated_at:
+          compensatedAt,
+        filesystem_state:
+          "restored_pre_apply",
+      }
+    );
+
+  if (!patchedStore) {
+    throw new Error(
+      "APPLY_COMPENSATION_METADATA_STORE_FAILED"
+    );
+  }
+
+  await writeJsonFile(
+    path.join(
+      ORA_PROPOSALS_DIR,
+      `${id}.json`
+    ),
+    patchedStore
+  );
+
+  await appendHistory({
+    proposal_id: id,
+    action:
+      "apply-compensated",
+    rollback_checkpoint_id:
+      rollbackCheckpointId,
+    reason:
+      failureReason,
+    timestamp:
+      compensatedAt,
+  });
+
+  await coherenceAppend({
+    type:
+      "apply-compensated",
+    proposalId:
+      id,
+    rollbackCheckpointId,
+    reason:
+      failureReason,
+    filesystemState:
+      "restored-pre-apply",
+  });
+
+  return {
+    ok: true,
+    proposalId:
+      id,
+    rollbackCheckpointId,
+    recovery,
+    compensatedAt,
+    status:
+      patchedStore.status,
+  };
 }
 
 async function readJsonFile(filePath: string) {
@@ -2853,13 +3589,279 @@ async function applyProposalByIdUnlocked(
 
   if (!applyFn) throw new Error("APPLY_FN_NOT_FOUND");
 
-  const applied = await applyFn(p);
+  /*
+   * T41_PRE_APPLY_BACKUP_GATE_V1
+   *
+   * El checkpoint pre-Apply es una copia de seguridad
+   * real y exige autorización soberana "backup"
+   * independiente de "apply_patch".
+   */
+  const backupAuthorization =
+    authorizeKairosExecution(
+      new Request(
+        "http://127.0.0.1/api/ora/autoprog/apply",
+        {
+          method: "POST",
+          headers: {
+            "x-kairos-seal": String(
+              req?.header?.("x-kairos-seal") ||
+              req?.headers?.["x-kairos-seal"] ||
+              ""
+            ),
+          },
+        }
+      ),
+      "backup"
+    );
+
+  if (!backupAuthorization.ok) {
+    const error: any =
+      new Error(
+        backupAuthorization.error
+      );
+
+    error.status =
+      backupAuthorization.status;
+
+    error.action =
+      backupAuthorization.action;
+
+    throw error;
+  }
+
+  /*
+   * T41_PRE_APPLY_ROLLBACK_GATE_V1
+   *
+   * Si Apply falla después de una mutación parcial,
+   * la restauración del checkpoint exige autorización
+   * soberana "rollback" ya validada antes de mutar.
+   */
+  const rollbackAuthorization =
+    authorizeKairosExecution(
+      new Request(
+        "http://127.0.0.1/api/ora/autoprog/apply",
+        {
+          method: "POST",
+          headers: {
+            "x-kairos-seal": String(
+              req?.header?.("x-kairos-seal") ||
+              req?.headers?.["x-kairos-seal"] ||
+              ""
+            ),
+          },
+        }
+      ),
+      "rollback"
+    );
+
+  if (!rollbackAuthorization.ok) {
+    const error: any =
+      new Error(
+        rollbackAuthorization.error
+      );
+
+    error.status =
+      rollbackAuthorization.status;
+
+    error.action =
+      rollbackAuthorization.action;
+
+    throw error;
+  }
+
+  /*
+   * T41_PRE_APPLY_ROLLBACK_CHECKPOINT_V1
+   *
+   * El checkpoint nace ANTES de cualquier mutación real.
+   */
+  const rollbackCheckpointId =
+    createDeployCheckpointId();
+
+  const proposalCheckpointPaths =
+    Array.from(
+      new Set(
+        p.files
+          .map((file: any) =>
+            String(
+              file?.path || ""
+            ).trim()
+          )
+          .filter(Boolean)
+      )
+    );
+
+  const checkpointFiles =
+    captureDeployCheckpointFiles(
+      rollbackCheckpointId,
+      proposalCheckpointPaths
+    );
+
+  const checkpointRegistries =
+    captureDeployCheckpointRegistries(
+      rollbackCheckpointId
+    );
+
+  const runtimeDataPaths =
+    checkpointFiles
+      .map((entry: any) =>
+        String(
+          entry?.path || ""
+        ).trim()
+      )
+      .filter(
+        (relativePath: string) =>
+          relativePath === "data" ||
+          relativePath.startsWith(
+            "data/"
+          )
+      );
+
+  const runtimeDataSensitive =
+    runtimeDataPaths.length > 0;
+
+  writeDeployCheckpointManifest(
+    rollbackCheckpointId,
+    {
+      checkpointId:
+        rollbackCheckpointId,
+      proposalId:
+        id,
+      proposalStatus:
+        p.status,
+      integrityHash:
+        p.integrity_hash ||
+        null,
+      createdAt:
+        new Date().toISOString(),
+      phase:
+        "pre_apply",
+      runtimeDataSensitive,
+      runtimeDataPaths,
+      files:
+        checkpointFiles,
+      registries:
+        checkpointRegistries,
+    }
+  );
+
+  const checkpointStore =
+    await setStatusStore(
+      id,
+      "approved",
+      {
+        rollback_checkpoint_id:
+          rollbackCheckpointId,
+      }
+    );
+
+  if (!checkpointStore) {
+    throw new Error(
+      "ROLLBACK_CHECKPOINT_STORE_LINK_FAILED"
+    );
+  }
+
+  p.metadata = {
+    ...(p.metadata || {}),
+    rollback_checkpoint_id:
+      rollbackCheckpointId,
+  };
+
+  let applied: any;
+
+  try {
+    applied =
+      await applyFn(p);
+  } catch (applyError: any) {
+    let recovery: any = null;
+
+    try {
+      recovery =
+        restoreDeployCheckpoint(
+          rollbackCheckpointId
+        );
+    } catch (rollbackError: any) {
+      const combined: any =
+        new Error(
+          "APPLY_FAILED_ROLLBACK_FAILED"
+        );
+
+      combined.applyError =
+        applyError?.message ||
+        String(applyError);
+
+      combined.rollbackError =
+        rollbackError?.message ||
+        String(rollbackError);
+
+      combined.rollbackCheckpointId =
+        rollbackCheckpointId;
+
+      throw combined;
+    }
+
+    const recovered: any =
+      new Error(
+        "APPLY_FAILED_ROLLBACK_RESTORED"
+      );
+
+    recovered.applyError =
+      applyError?.message ||
+      String(applyError);
+
+    recovered.rollbackCheckpointId =
+      rollbackCheckpointId;
+
+    recovered.recovery =
+      recovery;
+
+    throw recovered;
+  }
+
   const results =
     (applied as any)?.results ||
     (applied as any)?.result?.results ||
     (applied as any)?.applied?.results;
 
-  if (!Array.isArray(results)) throw new Error("APPLY_RESULTS_INVALID");
+  if (!Array.isArray(results)) {
+    let recovery: any = null;
+
+    try {
+      recovery =
+        restoreDeployCheckpoint(
+          rollbackCheckpointId
+        );
+    } catch (rollbackError: any) {
+      const combined: any =
+        new Error(
+          "APPLY_RESULTS_INVALID_ROLLBACK_FAILED"
+        );
+
+      combined.applyError =
+        "APPLY_RESULTS_INVALID";
+
+      combined.rollbackError =
+        rollbackError?.message ||
+        String(rollbackError);
+
+      combined.rollbackCheckpointId =
+        rollbackCheckpointId;
+
+      throw combined;
+    }
+
+    const recovered: any =
+      new Error(
+        "APPLY_RESULTS_INVALID_ROLLBACK_RESTORED"
+      );
+
+    recovered.rollbackCheckpointId =
+      rollbackCheckpointId;
+
+    recovered.recovery =
+      recovery;
+
+    throw recovered;
+  }
 
   const written = results.filter((x: any) => x?.action === "written").length;
   const modified = results.filter((x: any) => x?.action === "modified").length;
@@ -2917,43 +3919,101 @@ async function applyProposalByIdUnlocked(
    * Desde este punto ningún fallo de persistencia de estado
    * puede ser ocultado ni convertirse en un falso éxito.
    */
-  const updatedStore =
-    await setStatusStore(id, "applied", {
-      apply_mutated_files: applyMutatedFiles,
-      apply_has_real_mutation: applyHasRealMutation,
-    });
+  let registryCommit: any = null;
 
-  if (!updatedStore) {
-    throw new Error(
-      "APPLY_STATUS_STORE_UPDATE_FAILED"
-    );
-  }
+  try {
+    const updatedStore =
+      await setStatusStore(
+        id,
+        "applied",
+        {
+          apply_mutated_files:
+            applyMutatedFiles,
+          apply_has_real_mutation:
+            applyHasRealMutation,
+        }
+      );
 
-  await writeJsonFile(
-    path.join(
-      ORA_PROPOSALS_DIR,
-      `${id}.json`
-    ),
-    updatedProposal
-  );
+    if (!updatedStore) {
+      throw new Error(
+        "APPLY_STATUS_STORE_UPDATE_FAILED"
+      );
+    }
 
-  /*
-   * KAIROS_REGISTRY_COMMIT_POINT_V1
-   *
-   * Llegar aquí significa:
-   *
-   * 1. PatchEngine terminó;
-   * 2. existe evidencia efectiva;
-   * 3. store canónico ya dice applied;
-   * 4. proposal-file ya dice applied.
-   *
-   * Solamente ahora una intención estructural
-   * puede convertirse en registry materializado.
-   */
-  const registryCommit =
-    await commitRegistryAfterSuccessfulApply(
+    await writeJsonFile(
+      path.join(
+        ORA_PROPOSALS_DIR,
+        `${id}.json`
+      ),
       updatedProposal
     );
+
+    /*
+     * KAIROS_REGISTRY_COMMIT_POINT_V1
+     *
+     * Llegar aquí significa:
+     *
+     * 1. PatchEngine terminó;
+     * 2. existe evidencia efectiva;
+     * 3. store canónico ya dice applied;
+     * 4. proposal-file ya dice applied.
+     *
+     * Solamente ahora una intención estructural
+     * puede convertirse en registry materializado.
+     */
+    registryCommit =
+      await commitRegistryAfterSuccessfulApply(
+        updatedProposal
+      );
+  } catch (persistenceError: any) {
+    const failureReason =
+      persistenceError?.message ||
+      String(persistenceError);
+
+    let compensation: any = null;
+
+    try {
+      compensation =
+        await compensateApplyPersistenceFailure(
+          id,
+          rollbackCheckpointId,
+          failureReason
+        );
+    } catch (compensationError: any) {
+      const combined: any =
+        new Error(
+          "APPLY_PERSISTENCE_FAILED_COMPENSATION_FAILED"
+        );
+
+      combined.persistenceError =
+        failureReason;
+
+      combined.compensationError =
+        compensationError?.message ||
+        String(compensationError);
+
+      combined.rollbackCheckpointId =
+        rollbackCheckpointId;
+
+      throw combined;
+    }
+
+    const compensated: any =
+      new Error(
+        "APPLY_PERSISTENCE_FAILED_COMPENSATED"
+      );
+
+    compensated.persistenceError =
+      failureReason;
+
+    compensated.rollbackCheckpointId =
+      rollbackCheckpointId;
+
+    compensated.compensation =
+      compensation;
+
+    throw compensated;
+  }
 
   for (const result of results) {
     await appendHistory({
@@ -3173,6 +4233,43 @@ async function publishProposalById(id: string, req: any) {
     throw new Error("PUBLISH_REQUIRES_APPLIED");
   }
 
+  /*
+   * T41_PUBLISH_CHECKPOINT_COHERENCE_GATE_V1
+   *
+   * Una proposal cuyo Apply fue compensado conserva
+   * el lifecycle histórico "applied", pero su filesystem
+   * volvió al estado pre-Apply. No puede publicarse.
+   *
+   * Todo Apply publicable debe además estar enlazado
+   * inequívocamente a su checkpoint pre-Apply.
+   */
+  const rollbackCompensated =
+    proposal?.metadata
+      ?.rollback_compensated === true;
+
+  if (rollbackCompensated) {
+    throw new Error(
+      "PUBLISH_BLOCKED_APPLY_COMPENSATED"
+    );
+  }
+
+  const rollbackCheckpointId =
+    String(
+      proposal?.metadata
+        ?.rollback_checkpoint_id ||
+      ""
+    ).trim();
+
+  if (
+    !validDeployCheckpointId(
+      rollbackCheckpointId
+    )
+  ) {
+    throw new Error(
+      "PUBLISH_ROLLBACK_CHECKPOINT_MISSING_OR_INVALID"
+    );
+  }
+
   if (!proposal.kairos_approved) {
     throw new Error("PUBLISH_MISSING_KAIROS_APPROVAL");
   }
@@ -3254,9 +4351,11 @@ async function publishProposalById(id: string, req: any) {
   return {
     ok: true,
     proposalId: id,
+    rollbackCheckpointId,
     publish: {
       mode:
         "PUBLISH_VALIDATED_DEPLOY_REQUIRED",
+      rollbackCheckpointId,
       executed: false,
       buildExecuted: false,
       restartExecuted: false,
@@ -8592,6 +9691,188 @@ app.post(
         });
     }
 
+    const deploySource =
+      String(
+        req.body?.source ||
+        "core-system-deploy"
+      ).trim();
+
+    const deployProposalId =
+      String(
+        req.body?.proposalId ||
+        req.body?.id ||
+        ""
+      ).trim();
+
+    const rollbackCheckpointId =
+      String(
+        req.body?.rollbackCheckpointId ||
+        ""
+      ).trim();
+
+    let recoveryAuthorization:
+      Record<string, any> | null =
+      null;
+
+    /*
+     * T41_CORE_DEPLOY_CHECKPOINT_GATE_V1
+     *
+     * Safe-Publish no puede inyectar un checkpoint
+     * arbitrario. Core vuelve a enlazarlo contra
+     * la proposal canónica antes de crear estado.
+     */
+    if (
+      deploySource ===
+      "safe-publish-automatic"
+    ) {
+      if (!deployProposalId) {
+        return res.status(409).json({
+          ok: false,
+          action: "deploy",
+          error:
+            "DEPLOY_PROPOSAL_ID_MISSING",
+        });
+      }
+
+      if (
+        !validDeployCheckpointId(
+          rollbackCheckpointId
+        )
+      ) {
+        return res.status(409).json({
+          ok: false,
+          action: "deploy",
+          error:
+            "DEPLOY_ROLLBACK_CHECKPOINT_MISSING_OR_INVALID",
+        });
+      }
+
+      const deployProposal =
+        await resolveCanonicalProposal(
+          deployProposalId
+        );
+
+      if (!deployProposal) {
+        return res.status(409).json({
+          ok: false,
+          action: "deploy",
+          error:
+            "DEPLOY_PROPOSAL_NOT_FOUND",
+        });
+      }
+
+      const canonicalCheckpointId =
+        String(
+          deployProposal?.metadata
+            ?.rollback_checkpoint_id ||
+          ""
+        ).trim();
+
+      if (
+        canonicalCheckpointId !==
+        rollbackCheckpointId
+      ) {
+        return res.status(409).json({
+          ok: false,
+          action: "deploy",
+          error:
+            "DEPLOY_ROLLBACK_CHECKPOINT_MISMATCH",
+        });
+      }
+
+      if (
+        deployProposal?.metadata
+          ?.rollback_compensated === true
+      ) {
+        return res.status(409).json({
+          ok: false,
+          action: "deploy",
+          error:
+            "DEPLOY_BLOCKED_APPLY_COMPENSATED",
+        });
+      }
+
+      /*
+       * T41_RECOVERY_PREAUTHORIZATION_V1
+       *
+       * No ejecuta recuperación.
+       * Solo exige, en la petición soberana original,
+       * autoridad para todas las capacidades que una
+       * recuperación post-Core podría necesitar.
+       */
+      const recoveryRequest =
+        new Request(
+          "http://127.0.0.1/api/ora/system/deploy",
+          {
+            method: "POST",
+            headers: {
+              "x-kairos-seal":
+                String(
+                  req.header(
+                    "x-kairos-seal"
+                  ) || ""
+                ),
+            },
+          }
+        );
+
+      const recoveryActions = [
+        "rollback",
+        "modify_runtime",
+        "restart_front",
+        "restart_core",
+      ] as const;
+
+      const authorizedRecoveryActions:
+        Record<string, any> = {};
+
+      for (
+        const recoveryAction
+        of recoveryActions
+      ) {
+        const recoveryGate =
+          authorizeKairosExecution(
+            recoveryRequest,
+            recoveryAction
+          );
+
+        if (!recoveryGate.ok) {
+          return res
+            .status(
+              recoveryGate.status
+            )
+            .json({
+              ok: false,
+              action:
+                recoveryGate.action,
+              error:
+                recoveryGate.error,
+              stage:
+                "recovery_preauthorization",
+            });
+        }
+
+        authorizedRecoveryActions[
+          recoveryAction
+        ] = {
+          ok: true,
+          action:
+            recoveryGate.action,
+          authorizedBy:
+            recoveryGate.authorizedBy,
+        };
+      }
+
+      recoveryAuthorization = {
+        ok: true,
+        proposalId:
+          deployProposalId,
+        rollbackCheckpointId,
+        actions:
+          authorizedRecoveryActions,
+      };
+    }
+
     const deployId =
       `deploy-${Date.now()}-${crypto
         .randomBytes(6)
@@ -8617,8 +9898,7 @@ app.post(
         null,
 
       proposalId:
-        req.body?.proposalId ||
-        req.body?.id ||
+        deployProposalId ||
         null,
 
       branch:
@@ -8637,9 +9917,16 @@ app.post(
         req.body?.artifactDigest ||
         null,
 
+      rollbackCheckpointId:
+        rollbackCheckpointId ||
+        null,
+
+      recoveryAuthorization:
+        recoveryAuthorization ||
+        null,
+
       source:
-        req.body?.source ||
-        "core-system-deploy",
+        deploySource,
 
       build: null,
       restartFront: null,

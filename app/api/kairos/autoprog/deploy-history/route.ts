@@ -56,6 +56,18 @@ export async function POST(req: Request) {
       buildPassed: body?.buildPassed ?? null,
       deploy: body?.deploy ?? null,
       smokeTest: body?.smokeTest ?? null,
+      smokePassed:
+        body?.smokePassed ?? null,
+      eventType:
+        body?.eventType || null,
+      checkpointId:
+        body?.checkpointId || null,
+      recovery:
+        body?.recovery ?? null,
+      rollbackSucceeded:
+        body?.rollbackSucceeded ?? null,
+      recoveryValidated:
+        body?.recoveryValidated ?? null,
       source: body?.source || "safe-publish",
       createdAt: new Date().toISOString(),
     };

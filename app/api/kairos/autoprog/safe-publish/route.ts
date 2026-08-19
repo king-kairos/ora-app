@@ -295,6 +295,46 @@ export async function POST(
     }
 
     /*
+     * T41_CANONICAL_ROLLBACK_CHECKPOINT_V1
+     *
+     * El checkpoint se acepta exclusivamente desde
+     * la respuesta canónica de Core, nunca desde
+     * input arbitrario del cliente.
+     */
+    const rollbackCheckpointId =
+      String(
+        canonicalPublish
+          ?.rollbackCheckpointId ||
+        canonicalPublish
+          ?.publish
+          ?.rollbackCheckpointId ||
+        ""
+      ).trim();
+
+    if (
+      !/^checkpoint-\d+-[a-f0-9]{12}$/.test(
+        rollbackCheckpointId
+      )
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "SAFE_PUBLISH_ROLLBACK_CHECKPOINT_INVALID",
+          proposalId,
+          branch,
+          error:
+            "CANONICAL_ROLLBACK_CHECKPOINT_MISSING_OR_INVALID",
+          message:
+            "Core no devolvió una identidad válida de checkpoint pre-Apply.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    /*
      * 2. Build de validación previo.
      *
      * Se conserva independiente del full deploy.
@@ -316,6 +356,7 @@ export async function POST(
             JSON.stringify({
               proposalId,
               branch,
+              rollbackCheckpointId,
             }),
           cache:
             "no-store",
@@ -439,6 +480,38 @@ export async function POST(
         validate?.artifactDigest || ""
       ).trim();
 
+    const validatedRollbackCheckpointId =
+      String(
+        validate?.rollbackCheckpointId ||
+        ""
+      ).trim();
+
+    if (
+      validatedRollbackCheckpointId !==
+        rollbackCheckpointId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "SAFE_PUBLISH_VALIDATED_CHECKPOINT_MISMATCH",
+          proposalId,
+          branch,
+          rollbackCheckpointId,
+          validatedRollbackCheckpointId:
+            validatedRollbackCheckpointId ||
+            null,
+          error:
+            "VALIDATED_ARTIFACT_ROLLBACK_CHECKPOINT_MISMATCH",
+          message:
+            "El artefacto validado no está enlazado al mismo checkpoint canónico del publish.",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
     if (
       !validatedArtifactId ||
       !validatedBuildId ||
@@ -490,6 +563,7 @@ export async function POST(
                 validatedBuildId,
               artifactDigest:
                 validatedArtifactDigest,
+              rollbackCheckpointId,
               source:
                 "safe-publish-automatic",
             }),

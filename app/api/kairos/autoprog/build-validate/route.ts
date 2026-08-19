@@ -125,6 +125,32 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const proposalId = String(body?.proposalId || "").trim() || null;
     const branch = String(body?.branch || "").trim() || null;
+    const rollbackCheckpointId =
+      String(
+        body?.rollbackCheckpointId ||
+        ""
+      ).trim();
+
+    if (
+      !/^checkpoint-\d+-[a-f0-9]{12}$/.test(
+        rollbackCheckpointId
+      )
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          mode:
+            "BUILD_VALIDATION_ENGINE",
+          canPublish: false,
+          buildPassed: false,
+          error:
+            "ROLLBACK_CHECKPOINT_MISSING_OR_INVALID",
+        },
+        {
+          status: 409,
+        }
+      );
+    }
 
     const buildDirName = ".next-build-validate";
     const buildDir = path.join(process.cwd(), buildDirName);
@@ -220,6 +246,7 @@ export async function POST(req: Request) {
               artifactDigest,
               proposalId,
               branch,
+              rollbackCheckpointId,
               createdAt:
                 new Date().toISOString(),
             },
@@ -250,6 +277,7 @@ export async function POST(req: Request) {
       artifactDigest,
       proposalId,
       branch,
+      rollbackCheckpointId,
       stdout: result.stdout.slice(-8000),
       stderr: result.stderr.slice(-8000),
       message: buildPassed

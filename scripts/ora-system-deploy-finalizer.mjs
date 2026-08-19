@@ -181,6 +181,299 @@ const SMOKE_MAX_ATTEMPTS =
 const SMOKE_RETRY_MS =
   1000;
 
+function validatePromotionBackup(
+  state
+) {
+  const expectedBackupDir =
+    path.join(
+      ROOT,
+      `.next-pre-promote-${deployId}`
+    );
+
+  const stateBackupDir =
+    String(
+      state?.build?.backupDir || ""
+    ).trim();
+
+  if (
+    !stateBackupDir ||
+    path.resolve(
+      stateBackupDir
+    ) !==
+      path.resolve(
+        expectedBackupDir
+      )
+  ) {
+    return {
+      ok: false,
+      error:
+        "RECOVERY_FRONT_BACKUP_IDENTITY_INVALID",
+    };
+  }
+
+  if (
+    !fs.existsSync(
+      expectedBackupDir
+    )
+  ) {
+    return {
+      ok: false,
+      error:
+        "RECOVERY_FRONT_BACKUP_MISSING",
+    };
+  }
+
+  let stat;
+
+  try {
+    stat =
+      fs.lstatSync(
+        expectedBackupDir
+      );
+  } catch {
+    return {
+      ok: false,
+      error:
+        "RECOVERY_FRONT_BACKUP_STAT_FAILED",
+    };
+  }
+
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isDirectory()
+  ) {
+    return {
+      ok: false,
+      error:
+        "RECOVERY_FRONT_BACKUP_NOT_DIRECTORY",
+    };
+  }
+
+  return {
+    ok: true,
+    backupDir:
+      expectedBackupDir,
+    relativeBackupDir:
+      path.relative(
+        ROOT,
+        expectedBackupDir
+      ),
+  };
+}
+
+function restorePreviousFrontSafely(
+  backupValidation
+) {
+  if (
+    backupValidation?.ok !== true ||
+    !backupValidation?.backupDir
+  ) {
+    return {
+      ok: false,
+      restored: false,
+      error:
+        "RECOVERY_FRONT_BACKUP_NOT_VALIDATED",
+    };
+  }
+
+  const liveDir =
+    path.join(
+      ROOT,
+      ".next"
+    );
+
+  const backupDir =
+    String(
+      backupValidation.backupDir
+    ).trim();
+
+  const failedFrontDir =
+    path.join(
+      ROOT,
+      `.next-post-failed-deploy-${deployId}`
+    );
+
+  try {
+    if (
+      fs.existsSync(
+        failedFrontDir
+      )
+    ) {
+      return {
+        ok: false,
+        restored: false,
+        error:
+          "RECOVERY_FAILED_FRONT_SNAPSHOT_ALREADY_EXISTS",
+      };
+    }
+
+    if (
+      fs.existsSync(
+        liveDir
+      )
+    ) {
+      const liveStat =
+        fs.lstatSync(
+          liveDir
+        );
+
+      if (
+        liveStat.isSymbolicLink() ||
+        !liveStat.isDirectory()
+      ) {
+        return {
+          ok: false,
+          restored: false,
+          error:
+            "RECOVERY_LIVE_FRONT_NOT_DIRECTORY",
+        };
+      }
+
+      fs.renameSync(
+        liveDir,
+        failedFrontDir
+      );
+    }
+
+    try {
+      fs.renameSync(
+        backupDir,
+        liveDir
+      );
+    } catch (promotionError) {
+      if (
+        !fs.existsSync(
+          liveDir
+        ) &&
+        fs.existsSync(
+          failedFrontDir
+        )
+      ) {
+        fs.renameSync(
+          failedFrontDir,
+          liveDir
+        );
+      }
+
+      return {
+        ok: false,
+        restored: false,
+        error:
+          "RECOVERY_PREVIOUS_FRONT_RESTORE_FAILED",
+        detail:
+          promotionError instanceof Error
+            ? promotionError.message
+            : String(
+                promotionError
+              ),
+      };
+    }
+
+    return {
+      ok: true,
+      restored: true,
+      backupConsumed:
+        true,
+      failedFrontSnapshot:
+        fs.existsSync(
+          failedFrontDir
+        )
+          ? path.relative(
+              ROOT,
+              failedFrontDir
+            )
+          : null,
+      liveDir:
+        path.relative(
+          ROOT,
+          liveDir
+        ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      restored: false,
+      error:
+        "RECOVERY_FRONT_TRANSACTION_FAILED",
+      detail:
+        error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  }
+}
+
+function validateRecoveryAuthorization(
+  state
+) {
+  const proposalId =
+    String(
+      state?.proposalId || ""
+    ).trim();
+
+  const rollbackCheckpointId =
+    String(
+      state?.rollbackCheckpointId || ""
+    ).trim();
+
+  const authorization =
+    state?.recoveryAuthorization;
+
+  const requiredActions = [
+    "rollback",
+    "modify_runtime",
+    "restart_front",
+    "restart_core",
+  ];
+
+  if (
+    !proposalId ||
+    !/^checkpoint-\d+-[a-f0-9]{12}$/.test(
+      rollbackCheckpointId
+    ) ||
+    authorization?.ok !== true ||
+    String(
+      authorization?.proposalId || ""
+    ).trim() !== proposalId ||
+    String(
+      authorization?.rollbackCheckpointId ||
+      ""
+    ).trim() !== rollbackCheckpointId
+  ) {
+    return {
+      ok: false,
+      error:
+        "RECOVERY_AUTHORIZATION_IDENTITY_INVALID",
+    };
+  }
+
+  for (const action of requiredActions) {
+    const evidence =
+      authorization?.actions?.[action];
+
+    if (
+      evidence?.ok !== true ||
+      evidence?.action !== action ||
+      evidence?.authorizedBy !==
+        "KAIROS_SEAL"
+    ) {
+      return {
+        ok: false,
+        error:
+          `RECOVERY_AUTHORIZATION_ACTION_INVALID:${action}`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    proposalId,
+    rollbackCheckpointId,
+    actions:
+      requiredActions,
+  };
+}
+
 async function readJsonResponse(
   response
 ) {
@@ -197,6 +490,273 @@ async function readJsonResponse(
         text,
     };
   }
+}
+
+async function runCheckpointRecovery(
+  state
+) {
+  const seal =
+    String(
+      process.env
+        .KAIROS_SEAL ||
+      ""
+    ).trim();
+
+  if (!seal) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        ok: false,
+        error:
+          "KAIROS_SEAL_MISSING_IN_RECOVERY",
+      },
+    };
+  }
+
+  const proposalId =
+    String(
+      state?.proposalId || ""
+    ).trim();
+
+  const checkpointId =
+    String(
+      state?.rollbackCheckpointId || ""
+    ).trim();
+
+  const branch =
+    String(
+      state?.branch || ""
+    ).trim();
+
+  if (
+    !proposalId ||
+    !/^checkpoint-\d+-[a-f0-9]{12}$/.test(
+      checkpointId
+    )
+  ) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        ok: false,
+        error:
+          "RECOVERY_CHECKPOINT_IDENTITY_INVALID",
+      },
+    };
+  }
+
+  try {
+    const response =
+      await fetch(
+        `${FRONT_BASE}/api/kairos/autoprog/rollback`,
+        {
+          method:
+            "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            "x-kairos-seal":
+              seal,
+          },
+          body:
+            JSON.stringify({
+              checkpointId,
+              proposalId,
+              branch:
+                branch || null,
+              execute:
+                true,
+            }),
+        }
+      );
+
+    const data =
+      await readJsonResponse(
+        response
+      );
+
+    return {
+      ok:
+        response.ok &&
+        data?.ok === true &&
+        data?.mode ===
+          "ROLLBACK_CHECKPOINT_APPLIED",
+      status:
+        response.status,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        ok: false,
+        error:
+          "RECOVERY_CHECKPOINT_REQUEST_FAILED",
+        detail:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    };
+  }
+}
+
+async function restorePostCoreState(
+  state,
+  recoveryValidation,
+  frontBackupValidation
+) {
+  if (
+    recoveryValidation?.ok !== true ||
+    frontBackupValidation?.ok !== true
+  ) {
+    return {
+      ok: false,
+      stage:
+        "preconditions",
+      error:
+        "POST_CORE_RECOVERY_PRECONDITIONS_FAILED",
+      checkpointRecovery:
+        null,
+      frontRecovery:
+        null,
+    };
+  }
+
+  const checkpointRecovery =
+    await runCheckpointRecovery(
+      state
+    );
+
+  if (
+    checkpointRecovery?.ok !== true
+  ) {
+    return {
+      ok: false,
+      stage:
+        "checkpoint",
+      error:
+        "POST_CORE_CHECKPOINT_RECOVERY_FAILED",
+      checkpointRecovery,
+      frontRecovery:
+        null,
+    };
+  }
+
+  const frontRecovery =
+    restorePreviousFrontSafely(
+      frontBackupValidation
+    );
+
+  if (
+    frontRecovery?.ok !== true
+  ) {
+    return {
+      ok: false,
+      stage:
+        "front",
+      error:
+        "POST_CORE_FRONT_RECOVERY_FAILED",
+      checkpointRecovery,
+      frontRecovery,
+    };
+  }
+
+  const recoveryRestartFront =
+    run(
+      "pm2",
+      [
+        "restart",
+        "ora-front",
+        "--update-env",
+      ]
+    );
+
+  if (
+    recoveryRestartFront?.ok !== true
+  ) {
+    return {
+      ok: false,
+      stage:
+        "restart_front",
+      error:
+        "POST_CORE_RECOVERY_RESTART_FRONT_FAILED",
+      checkpointRecovery,
+      frontRecovery,
+      recoveryRestartFront,
+      recoveryRestartCore:
+        null,
+      recoverySmoke:
+        null,
+    };
+  }
+
+  const recoveryRestartCore =
+    run(
+      "pm2",
+      [
+        "restart",
+        "ora",
+        "--update-env",
+      ]
+    );
+
+  if (
+    recoveryRestartCore?.ok !== true
+  ) {
+    return {
+      ok: false,
+      stage:
+        "restart_core",
+      error:
+        "POST_CORE_RECOVERY_RESTART_CORE_FAILED",
+      checkpointRecovery,
+      frontRecovery,
+      recoveryRestartFront,
+      recoveryRestartCore,
+      recoverySmoke:
+        null,
+    };
+  }
+
+  const recoverySmoke =
+    await runSafePublishSmoke(
+      state
+    );
+
+  const recoverySmokePassed =
+    recoverySmoke?.ok === true &&
+    recoverySmoke?.data?.ok === true;
+
+  if (!recoverySmokePassed) {
+    return {
+      ok: false,
+      stage:
+        "recovery_smoke",
+      error:
+        "POST_CORE_RECOVERY_SMOKE_FAILED",
+      checkpointRecovery,
+      frontRecovery,
+      recoveryRestartFront,
+      recoveryRestartCore,
+      recoverySmoke,
+    };
+  }
+
+  return {
+    ok: true,
+    stage:
+      "recovered",
+    checkpointRecovery,
+    frontRecovery,
+    recoveryRestartFront,
+    recoveryRestartCore,
+    recoverySmoke,
+    recoveredAt:
+      now(),
+  };
 }
 
 async function runSafePublishSmoke(
@@ -437,6 +997,103 @@ async function recordSafePublishHistory(
   }
 }
 
+async function recordPostCoreRecoveryHistory(
+  state,
+  recovery,
+  rollbackSucceeded
+) {
+  const seal =
+    String(
+      process.env
+        .KAIROS_SEAL ||
+      ""
+    ).trim();
+
+  if (!seal) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        error:
+          "KAIROS_SEAL_MISSING_IN_FINALIZER",
+      },
+    };
+  }
+
+  try {
+    const response =
+      await fetch(
+        `${FRONT_BASE}/api/kairos/autoprog/deploy-history`,
+        {
+          method:
+            "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            "x-kairos-seal":
+              seal,
+          },
+          body:
+            JSON.stringify({
+              proposalId:
+                state?.proposalId ||
+                null,
+              branch:
+                state?.branch ||
+                null,
+              buildPassed:
+                true,
+              eventType:
+                "post_core_recovery",
+              checkpointId:
+                state?.rollbackCheckpointId ||
+                null,
+              recovery,
+              rollbackSucceeded:
+                rollbackSucceeded === true,
+              recoveryValidated:
+                recovery?.ok === true,
+              deploy: {
+                deployId:
+                  state?.deployId ||
+                  null,
+                status:
+                  "failed",
+                stage:
+                  rollbackSucceeded === true
+                    ? "rolled_back"
+                    : "recovery_failed",
+              },
+              source:
+                "safe-publish-post-core-recovery-v1",
+            }),
+        }
+      );
+
+    return {
+      ok:
+        response.ok,
+      status:
+        response.status,
+      data:
+        await readJsonResponse(
+          response
+        ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    };
+  }
+}
+
 async function main() {
   /*
    * El runner padre debe haber terminado antes
@@ -576,18 +1233,65 @@ async function main() {
     );
 
   if (!smokePassed) {
+    const recoveryState =
+      readState();
+
+    const recoveryValidation =
+      validateRecoveryAuthorization(
+        recoveryState
+      );
+
+    const frontBackupValidation =
+      validatePromotionBackup(
+        recoveryState
+      );
+
+    const rollbackReady =
+      recoveryValidation.ok === true &&
+      frontBackupValidation.ok === true;
+
+    if (!rollbackReady) {
+      writeState({
+        status:
+          "failed",
+        stage:
+          "failed",
+        failedStage:
+          "smoke_test",
+        completedAt:
+          now(),
+        error:
+          "SAFE_PUBLISH_SMOKE_TEST_FAILED",
+        restartCore,
+        deploySucceeded:
+          true,
+        productionValidated:
+          false,
+        smokeTest:
+          smoke,
+        deployHistory,
+        recoveryValidation,
+        frontBackupValidation,
+        recoveryAttempted:
+          false,
+        rollbackRecommended:
+          false,
+        rollbackBlocked:
+          true,
+      });
+
+      return;
+    }
+
     writeState({
       status:
-        "failed",
+        "running",
       stage:
-        "failed",
+        "recovering_post_core",
       failedStage:
         "smoke_test",
-      completedAt:
-        now(),
       error:
         "SAFE_PUBLISH_SMOKE_TEST_FAILED",
-      restartCore,
       deploySucceeded:
         true,
       productionValidated:
@@ -595,8 +1299,102 @@ async function main() {
       smokeTest:
         smoke,
       deployHistory,
+      recoveryValidation,
+      frontBackupValidation,
+      recoveryAttempted:
+        true,
       rollbackRecommended:
         true,
+      rollbackBlocked:
+        false,
+    });
+
+    const recovery =
+      await restorePostCoreState(
+        recoveryState,
+        recoveryValidation,
+        frontBackupValidation
+      );
+
+    if (recovery?.ok !== true) {
+      const postCoreRecoveryHistory =
+        await recordPostCoreRecoveryHistory(
+          recoveryState,
+          recovery,
+          false
+        );
+
+      writeState({
+        status:
+          "failed",
+        stage:
+          "recovery_failed",
+        failedStage:
+          recovery?.stage ||
+          "post_core_recovery",
+        completedAt:
+          now(),
+        error:
+          recovery?.error ||
+          "POST_CORE_RECOVERY_FAILED",
+        deploySucceeded:
+          true,
+        productionValidated:
+          false,
+        recoveryAttempted:
+          true,
+        recovery,
+        postCoreRecoveryHistory,
+        rollbackSucceeded:
+          false,
+        recoveryValidated:
+          false,
+        rollbackRecommended:
+          false,
+        rollbackBlocked:
+          false,
+      });
+
+      return;
+    }
+
+    const postCoreRecoveryHistory =
+      await recordPostCoreRecoveryHistory(
+        recoveryState,
+        recovery,
+        true
+      );
+
+    writeState({
+      status:
+        "failed",
+      stage:
+        "rolled_back",
+      failedStage:
+        "smoke_test",
+      completedAt:
+        now(),
+      error:
+        "SAFE_PUBLISH_SMOKE_TEST_FAILED_ROLLBACK_RECOVERED",
+      deploySucceeded:
+        true,
+      productionValidated:
+        false,
+      recoveryAttempted:
+        true,
+      recovery,
+      postCoreRecoveryHistory,
+      rollbackSucceeded:
+        true,
+      recoveryValidated:
+        true,
+      rollbackRecommended:
+        false,
+      rollbackBlocked:
+        false,
+      recoveredAt:
+        recovery?.recoveredAt ||
+        now(),
     });
 
     return;
