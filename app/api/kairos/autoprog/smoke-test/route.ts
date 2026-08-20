@@ -98,14 +98,21 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const branch = String(body?.branch || "").trim();
-
-    if (!branch) {
-      return NextResponse.json(
-        { ok: false, error: "MISSING_BRANCH" },
-        { status: 400 }
-      );
-    }
+    /*
+     * T41_SMOKE_OPTIONAL_BRANCH_V1
+     *
+     * El smoke valida producción global:
+     * homepage, Core y PM2.
+     *
+     * branch es metadata opcional para proposals
+     * manuales y no controla ninguno de esos checks.
+     */
+    const branch =
+      String(
+        body?.branch ||
+        ""
+      ).trim() ||
+      null;
 
     const pageUrl = "https://orareal.com/";
     const apiUrl = "http://127.0.0.1:3001/health";

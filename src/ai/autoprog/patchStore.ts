@@ -658,6 +658,69 @@ export async function patchProposalMetadata(
       proposal;
 
     await writeDb(db);
+
+    /*
+     * T41_PROPOSAL_METADATA_DUAL_STORE_SYNC_V1
+     *
+     * Si existe una copia enriquecida en ora-data/proposals,
+     * sincroniza solamente metadata + updatedAt.
+     * Así DB y loose file no pueden divergir después de
+     * una compensación post-Core.
+     */
+    const looseTarget =
+      path.join(
+        PROPOSALS_DIR,
+        `${proposal.id}.json`
+      );
+
+    try {
+      const looseRaw =
+        await fs.readFile(
+          looseTarget,
+          "utf8"
+        );
+
+      const looseProposal =
+        JSON.parse(looseRaw);
+
+      if (
+        looseProposal &&
+        typeof looseProposal === "object"
+      ) {
+        const synchronized = {
+          ...looseProposal,
+          metadata:
+            normalizeMetadata({
+              ...(looseProposal.metadata || {}),
+              ...metadataPatch,
+            }),
+          updatedAt:
+            proposal.updatedAt,
+        };
+
+        const temporary =
+          `${looseTarget}.${process.pid}.tmp`;
+
+        await fs.writeFile(
+          temporary,
+          JSON.stringify(
+            synchronized,
+            null,
+            2
+          ),
+          "utf8"
+        );
+
+        await fs.rename(
+          temporary,
+          looseTarget
+        );
+      }
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 
   return proposal;

@@ -794,10 +794,14 @@ async function runSafePublishSmoke(
       ""
     ).trim();
 
-  if (
-    !branch ||
-    !proposalId
-  ) {
+  /*
+   * T41_SMOKE_OPTIONAL_BRANCH_V1
+   *
+   * proposalId identifica el deploy.
+   * branch puede ser null para proposals manuales.
+   * El smoke valida producción global, no una rama.
+   */
+  if (!proposalId) {
     return {
       ok: false,
       attemptsUsed: 0,
